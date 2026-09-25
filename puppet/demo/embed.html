@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>パペット埋め込み例</title>
+<style>
+  /* 背景は透明。配信ソフトのブラウザ表示や、他のページへの埋め込みにそのまま使える */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  canvas { width: 100vw; height: 100vh; display: block; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script type="module">
+// 指定できる項目(アドレスの ? の後ろ):
+//   focus=bust     バストアップで表示(省略時は全身)
+//   mic=1          マイクの音量で口パク(初回に許可が必要)
+//   idle=0         待機モーションを流さない
+//   model=...      別のモデル(puppet.json)を使う
+import { PuppetView } from "../runtime/puppet.js";
+
+const q = new URLSearchParams(location.search);
+const base = q.get("model") ? q.get("model").replace(/[^/]*$/, "") : "../models/kurisu/";
+const view = new PuppetView(document.getElementById("cv"), { follow: "window" });
+const puppet = await view.load(q.get("model") || base + "puppet.json");
+if (q.get("focus") === "bust") {
+  const h = puppet.json.anchors.head, hw = h[2] - h[0], hh = h[3] - h[1];
+  view.opts.focus = [h[0] - hw * 0.45, h[1], hw * 1.9, hh * 1.7];
+  puppet.fit(0.04, view.opts.focus);
+}
+if (q.get("idle") !== "0") {
+  try {
+    const list = await (await fetch(base + "motions/index.json")).json();
+    view.setIdleMotions(list.filter((m) => m.idle).map((m) => base + "motions/" + m.file));
+  } catch { /* モーションが無くても動く */ }
+}
+if (q.get("mic") === "1") {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  puppet.connectAudio(stream);
+}
+// 他のスクリプトから操作できるように公開する(例: puppet.playMotion("../models/kurisu/motions/smile.motion3.json"))
+window.puppet = puppet;
+</script>
+</body>
+</html>

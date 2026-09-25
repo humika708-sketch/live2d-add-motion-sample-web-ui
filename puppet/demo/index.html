@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>パペット確認画面</title>
+<style>
+  :root { --bg: #1d1f27; --panel: #262935; --line: #3a3e4d; --text: #e8e8ee; --sub: #a0a4b4; --accent: #e0584a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+               font: 14px/1.5 "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif; }
+  body { display: flex; }
+  #stage { flex: 1; position: relative; min-width: 0;
+           background: radial-gradient(circle at 50% 30%, #3b3346 0%, #1d1f27 70%); }
+  #stage.checker { background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 24px 24px; }
+  #cv { width: 100%; height: 100%; display: block; touch-action: none; }
+  #status { position: absolute; left: 12px; bottom: 12px; background: #000a; padding: 4px 10px; border-radius: 6px; font-size: 12px; }
+  #panel { width: 340px; background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 14px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 13px; color: var(--sub); margin: 18px 0 8px; font-weight: normal; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .row { display: grid; grid-template-columns: 120px 1fr 44px; gap: 6px; align-items: center; margin: 3px 0; font-size: 12px; }
+  .row input { width: 100%; }
+  .row output { text-align: right; color: var(--sub); font-variant-numeric: tabular-nums; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  button { background: #343849; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  label.chk { display: flex; gap: 6px; align-items: center; margin: 3px 0; font-size: 13px; }
+  .note { color: var(--sub); font-size: 12px; }
+  select { width: 100%; background: #343849; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px; }
+  @media (max-width: 760px) { body { flex-direction: column; } #stage { height: 60vh; flex: none; } #panel { width: auto; } }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas><div id="status">読み込み中…</div></div>
+<div id="panel">
+  <h1>パペット確認画面</h1>
+  <div class="note">マウスの方向を向きます。下のスライダーで各部を直接動かせます。</div>
+
+  <h2>モーション</h2>
+  <div class="btns" id="motions"></div>
+  <div style="margin-top:6px" class="btns"><button id="stopMotion">モーション停止</button><button id="idleToggle">待機モーション: 切</button></div>
+
+  <h2>自動の動き</h2>
+  <label class="chk"><input type="checkbox" id="autoLook" checked> マウスを目で追う</label>
+  <label class="chk"><input type="checkbox" id="autoBlink" checked> まばたき</label>
+  <label class="chk"><input type="checkbox" id="autoBreath" checked> 呼吸</label>
+  <label class="chk"><input type="checkbox" id="autoPhysics" checked> 髪揺れ(物理演算)</label>
+  <div class="btns" style="margin-top:6px"><button id="mic">マイクで口パク</button><button id="resetParams">値をリセット</button></div>
+
+  <h2>表示</h2>
+  <div class="btns"><button data-focus="all">全身</button><button data-focus="bust">バストアップ</button></div>
+  <label class="chk" style="margin-top:6px"><input type="checkbox" id="checker"> 透明部分を市松模様で表示</label>
+
+  <h2>書き出し</h2>
+  <div class="note">選んだモーションを連番画像(1枚にまとめた画像)として保存します。動画編集やゲームなど、この表示エンジンを組み込めない場所で使えます。</div>
+  <div style="margin:6px 0"><select id="exportMotion"></select></div>
+  <div class="btns"><button id="exportSheet">連番画像を保存</button><button id="exportPng">今の画面を保存</button></div>
+
+  <h2>パラメータ</h2>
+  <div id="params"></div>
+</div>
+
+<script type="module">
+import { PuppetView, Motion } from "../runtime/puppet.js";
+
+const q = new URLSearchParams(location.search);
+const MODEL = q.get("model") || "../models/kurisu/puppet.json";
+const MOTION_DIR = q.get("motions") || "../models/kurisu/motions/";
+const status = document.getElementById("status");
+const canvas = document.getElementById("cv");
+
+const FOCUS = { all: null };
+let view, puppet;
+
+try {
+  view = new PuppetView(canvas, { follow: "window" });
+  puppet = await view.load(MODEL);
+} catch (e) {
+  status.textContent = "エラー: " + e.message;
+  throw e;
+}
+window.puppet = puppet; window.view = view;   // 確認・操作用
+const head = puppet.json.anchors.head;
+const hw = head[2] - head[0], hh = head[3] - head[1];
+FOCUS.bust = [head[0] - hw * 0.45, head[1], hw * 1.9, hh * 1.7];
+FOCUS.face = [head[0] + hw * 0.1, head[1] + hh * 0.2, hw * 0.8, hh * 0.75];
+function setFocus(name) { view.opts.focus = FOCUS[name]; puppet.fit(0.04, FOCUS[name]); }
+document.querySelectorAll("[data-focus]").forEach((b) => b.onclick = () => setFocus(b.dataset.focus));
+if (q.get("focus")) setFocus(q.get("focus"));
+
+// パラメータのスライダー
+const sliders = new Map();
+const box = document.getElementById("params");
+for (const p of puppet.parameterList) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<span title="${p.id}">${p.name}</span><input type="range" min="${p.min}" max="${p.max}" step="0.01" value="${p.default}"><output>${p.default}</output>`;
+  const input = row.querySelector("input"), out = row.querySelector("output");
+  input.oninput = () => { puppet.setParam(p.id, +input.value); out.textContent = (+input.value).toFixed(2); };
+  sliders.set(p.id, { input, out, p });
+  box.appendChild(row);
+}
+document.getElementById("resetParams").onclick = () => {
+  for (const { input, out, p } of sliders.values()) { input.value = p.default; out.textContent = p.default; puppet.setParam(p.id, p.default); }
+};
+
+// 自動の動き
+const bind = (id, key) => { const el = document.getElementById(id); el.onchange = () => { puppet.auto[key] = el.checked; if (key === "lookAt" && !el.checked) puppet.lookAt(0, 0); }; };
+bind("autoLook", "lookAt"); bind("autoBlink", "blink"); bind("autoBreath", "breath"); bind("autoPhysics", "physics");
+document.getElementById("checker").onchange = (e) => document.getElementById("stage").classList.toggle("checker", e.target.checked);
+
+// モーション一覧(motions/index.json)
+let motionList = [];
+try { motionList = await (await fetch(MOTION_DIR + "index.json")).json(); } catch { motionList = []; }
+const mbox = document.getElementById("motions"), sel = document.getElementById("exportMotion");
+for (const m of motionList) {
+  const b = document.createElement("button");
+  b.textContent = m.name;
+  b.onclick = async () => { status.textContent = `再生中: ${m.name}`; await puppet.playMotion(MOTION_DIR + m.file); status.textContent = "待機中"; };
+  mbox.appendChild(b);
+  const o = document.createElement("option"); o.value = m.file; o.textContent = m.name; sel.appendChild(o);
+}
+if (!motionList.length) mbox.innerHTML = '<div class="note">モーションがありません</div>';
+document.getElementById("stopMotion").onclick = () => puppet.stopMotion();
+let idleOn = false;
+document.getElementById("idleToggle").onclick = (e) => {
+  idleOn = !idleOn;
+  view.setIdleMotions(idleOn ? motionList.filter((m) => m.idle).map((m) => MOTION_DIR + m.file) : []);
+  e.target.textContent = `待機モーション: ${idleOn ? "入" : "切"}`;
+};
+
+// マイクで口パク
+document.getElementById("mic").onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    puppet.connectAudio(stream);
+    status.textContent = "マイク入力で口パク中";
+  } catch (e) { status.textContent = "マイクを使えません: " + e.message; }
+};
+
+// 書き出し
+function download(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; a.click(); }
+document.getElementById("exportPng").onclick = () => download(canvas.toDataURL("image/png"), "puppet.png");
+document.getElementById("exportSheet").onclick = async () => {
+  const file = sel.value;
+  if (!file) return;
+  status.textContent = "書き出し中…";
+  const res = await exportSpriteSheet(MOTION_DIR + file, { fps: 24, width: 512, height: 512, focus: view.opts.focus });
+  download(res.sheet, file.replace(".motion3.json", "") + "_連番.png");
+  download(URL.createObjectURL(new Blob([JSON.stringify(res.meta, null, 2)], { type: "application/json" })), file.replace(".motion3.json", "") + "_連番.json");
+  status.textContent = `書き出し完了(${res.meta.frames}コマ)`;
+};
+
+// 見えないキャンバスでモーションを1コマずつ描き、1枚の画像に並べる
+async function exportSpriteSheet(url, { fps, width, height, focus }) {
+  const off = document.createElement("canvas");
+  off.width = width; off.height = height;
+  const { Puppet } = await import("../runtime/puppet.js");
+  const p = await Puppet.load(off, MODEL);
+  p.auto.lookAt = false; p.auto.blink = false;
+  p.fit(0.04, focus);
+  const motion = await Motion.load(url);
+  const frames = Math.max(1, Math.round(motion.duration * fps));
+  const cols = Math.ceil(Math.sqrt(frames));
+  const rows = Math.ceil(frames / cols);
+  const sheet = document.createElement("canvas");
+  sheet.width = cols * width; sheet.height = rows * height;
+  const g = sheet.getContext("2d");
+  p.update(0.5);           // 物理演算を落ち着かせる
+  p.playMotion(motion);
+  for (let i = 0; i < frames; i++) {
+    p.update(1 / fps);
+    p.render();
+    g.drawImage(off, (i % cols) * width, Math.floor(i / cols) * height);
+  }
+  return { sheet: sheet.toDataURL("image/png"),
+           meta: { frames, fps, cols, rows, frameWidth: width, frameHeight: height, duration: motion.duration } };
+}
+window.exportSpriteSheet = exportSpriteSheet;
+
+// 確認用: ?set=ParamAngleX:30,ParamEyeLOpen:0 で値を固定、?auto=0 で自動の動きを止める、?play=ファイル名 で再生
+if (q.get("auto") === "0") { for (const k of Object.keys(puppet.auto)) if (k !== "physics") puppet.auto[k] = false; }
+if (q.get("set")) for (const kv of q.get("set").split(",")) { const [k, v] = kv.split(":"); puppet.setParam(k, +v); }
+if (q.get("play")) puppet.playMotion(MOTION_DIR + q.get("play"));
+status.textContent = "準備完了";
+window.READY = true;
+</script>
+</body>
+</html>
