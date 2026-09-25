@@ -1,0 +1,73 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "amadeus_ex.moc3",
+    "Textures": [
+      "texture_00.png"
+    ],
+    "Physics": "amadeus_ex.physics3.json",
+    "DisplayInfo": "amadeus_ex.cdi3.json",
+    "Motions": {
+      "Action": [
+        {
+          "File": "motion/kurisu_smile.motion3.json",
+          "Name": "微笑み",
+          "FadeInTime": 0.4,
+          "FadeOutTime": 0.5
+        },
+        {
+          "File": "motion/kurisu_embarrassed.motion3.json",
+          "Name": "照れ隠し",
+          "FadeInTime": 0.4,
+          "FadeOutTime": 0.5
+        },
+        {
+          "File": "motion/kurisu_surprised.motion3.json",
+          "Name": "びっくり",
+          "FadeInTime": 0.2,
+          "FadeOutTime": 0.5
+        },
+        {
+          "File": "motion/kurisu_jitome.motion3.json",
+          "Name": "ジト目",
+          "FadeInTime": 0.4,
+          "FadeOutTime": 0.5
+        },
+        {
+          "File": "motion/kurisu_lookaround.motion3.json",
+          "Name": "きょろきょろ",
+          "FadeInTime": 0.4,
+          "FadeOutTime": 0.5
+        },
+        {
+          "File": "motion/kurisu_sleepy.motion3.json",
+          "Name": "うとうと",
+          "FadeInTime": 0.5,
+          "FadeOutTime": 0.5
+        },
+        {
+          "File": "motion/kurisu_thinking.motion3.json",
+          "Name": "考え中",
+          "FadeInTime": 0.5,
+          "FadeOutTime": 0.5
+        }
+      ]
+    }
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": [
+        "ParamEyeROpen"
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": [
+        "ParamMouthOpenY"
+      ]
+    }
+  ]
+}
