@@ -65,7 +65,8 @@ def main():
     if model3:
         generated = {
             os.path.normpath(os.path.join(RUNTIME, e["File"]))
-            for e in json.load(open(model3))["FileReferences"]["Motions"].get("Action", [])
+            # .get: models that ship without any motions have no "Motions" key
+            for e in json.load(open(model3))["FileReferences"].get("Motions", {}).get("Action", [])
         }
         motions = [f for f in motions if os.path.normpath(f) not in generated]
 
