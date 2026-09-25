@@ -21,3 +21,6 @@ motion-defs/*
 # パペット: 画像から生成したモデル(元画像の権利に従うため、リポジトリに含めない)と、拡大モデルの重みの置き場
 puppet/models/
 puppet/builder/.cache/
+
+# パイソンの一時ファイル
+__pycache__/

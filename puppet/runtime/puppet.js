@@ -502,7 +502,7 @@ export class Puppet {
     }
     if (this.auto.lookAt) {
       const add = (id, v) => { if (this.paramInfo.has(id)) P.set(id, (P.get(id) ?? 0) + v); };
-      add("ParamAngleX", L.x * 30); add("ParamAngleY", L.y * 30);
+      add("ParamAngleX", L.x * 20); add("ParamAngleY", L.y * 18);
       add("ParamAngleZ", -L.x * L.y * 8);
       add("ParamBodyAngleX", L.x * 10);
       if (!touched.has("ParamEyeBallX")) add("ParamEyeBallX", L.x);

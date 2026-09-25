@@ -21,6 +21,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from scipy import ndimage
 
+from inpaint_lama import inpaint as lama_inpaint
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -78,6 +80,24 @@ def ellipse_mask(center, radius):
 def soft(mask, sigma=0.6):
     """二値マスクの縁を少しぼかす(部品の境目がギザギザにならないように)"""
     return cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigma * S)
+
+
+def decontaminate(rgb, alpha, core_thresh=0.9):
+    """半透明の縁の画素の色を、内側(不透明部分)の色に置き換える。
+    縁に背景や下の部品の色(白衣の白など)が混ざっていると、動かしたときに白い縁取りが見えるため"""
+    core = alpha >= core_thresh
+    if not core.any():
+        return rgb
+    _, (iy, ix) = ndimage.distance_transform_edt(~core, return_indices=True)
+    edge = (alpha > 0) & ~core
+    out = rgb.copy()
+    out[edge] = rgb[iy[edge], ix[edge]]
+    return out
+
+
+def smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0), 0, 1)
+    return t * t * (3 - 2 * t)
 
 
 def remove_small(mask, min_area):
@@ -146,6 +166,9 @@ _m = CFG["口"]["消す範囲"]
 _feature[int(P(_m[1])):int(P(_m[3])), int(P(_m[0])):int(P(_m[2]))] = True
 _dark_strand = HEAD_POLY & (VAL < 120) & (ALPHA > 0.5) & ~_feature
 HAIR = HAIR | remove_small(_dark_strand, int(3 * S * S))
+# 髪のすぐ外側の暗い線(髪の輪郭線)も髪に含める。含めないと、髪が動いたときに体の側へ線が残る
+_near_hair = ndimage.binary_dilation(HAIR, iterations=int(3 * S))
+HAIR = HAIR | (_near_hair & (VAL < 110) & (ALPHA > 0.05) & ~_feature)
 
 # 前髪 = 顔の上にかかる髪
 bg = CFG["前髪の範囲"]
@@ -266,13 +289,21 @@ hair_soft = np.clip(soft(HAIR, 0.5), 0, 1)
 # --- 後ろ髪: 体・顔・前髪の下にも髪の色を塗り足しておく(頭や髪が動いても隙間が出ない)
 # 塗り足すのはキャラクターの輪郭の内側だけ(外側に塗ると背景に色が出てしまう)
 under_back = ((ndimage.binary_dilation(BACK, iterations=int(30 * S)) | HEAD_POLY) & (ALPHA > 0.5)) & ~BACK
-rgb_back = diffuse_fill(RGB, BACK & (ALPHA > 0.9), under_back, iters=40)
+_hair_ctx = diffuse_fill(RGB, HAIR & (ALPHA > 0.9), ~HAIR & ndimage.binary_dilation(HAIR, iterations=int(60 * S)))
+# 顔の後ろ: LaMa は「髪に囲まれた穴」に顔を描いてしまうので使わず、なめらかな髪の色を縦方向にならして毛の流れを出す
+_behind_head = under_back & ndimage.binary_dilation(HEAD_POLY, iterations=int(10 * S))
+_v = cv2.blur(_hair_ctx, (max(3, int(3 * S)) | 1, max(3, int(40 * S)) | 1))
+rgb_back = np.where(_behind_head[..., None], _v, _hair_ctx)
+# 白衣の下の髪: こちらは LaMa で毛の質感を描き足す
+print("後ろ髪の隠れた部分を描き足し中(LaMa)")
+rgb_back = lama_inpaint(rgb_back, under_back & ~_behind_head)
 a_back = np.where(BACK, ALPHA * np.clip(soft(BACK, 0.5) * 1.5, 0, 1), 0)
 a_back = np.maximum(a_back, under_back.astype(np.float32))
-layer("後ろ髪", rgb_back, a_back)
+layer("後ろ髪", decontaminate(rgb_back, a_back), a_back)
 
 # --- 体: 前の房の下を塗り足し、首をあごの下へ延ばす
-under_body = FRONT & inside_body & (YY >= y_start - P(10))
+_lock_all = ndimage.binary_dilation(FRONT, iterations=int(6 * S)) & (ALPHA > 0.5)   # 房全体(毛先の薄い部分も含める)
+under_body = _lock_all & inside_body & (YY >= y_start - P(10))
 # 首の延長: 各列で「あごのすぐ下の首の色」を上へ伸ばす。
 # 首の幅は、あごの下に肌がある列だけを使うことで自動的に決まる(髪のある列には伸ばさない)
 skin_like_body = (VAL > 100) & ((RGB[..., 0] - RGB[..., 2]) * 255 > 18)
@@ -290,7 +321,8 @@ for x in range(int(pcx - P(60)), int(pcx + P(60))):
     if len(ok) < 3:
         continue
     y0 = ok[0]
-    c = RGB[y0 + int(1 * S):y0 + int(4 * S), x].mean(axis=0)
+    # あごのすぐ下は影で暗いので、少し下の明るい首の色を使う
+    c = RGB[y0 + int(10 * S):y0 + int(24 * S), x].mean(axis=0)
     y_top = int(max(y_jaw - ext, 0))
     neck[y_top:y0, x] = True
     neck_rgb[y_top:y0, x] = c
@@ -300,7 +332,10 @@ neck_rgb = cv2.GaussianBlur(neck_rgb, (0, 0), 1.2 * S)
 _wt = cv2.GaussianBlur(neck.astype(np.float32), (0, 0), 1.2 * S)
 neck_rgb = neck_rgb / np.maximum(_wt, 1e-4)[..., None]
 known_body = BODY & (ALPHA > 0.9) & ~FRONT
-rgb_body = diffuse_fill(RGB, known_body, under_body, iters=50)
+print("胸の房の下の白衣を描き足し中(LaMa)")
+# 房を丸ごと消してから描き足し、使うのは白衣がある部分だけ(肩の上の髪の色がにじまないように)
+_filled = lama_inpaint(RGB, _lock_all)
+rgb_body = np.where(under_body[..., None], _filled, RGB)
 rgb_body = np.where(neck[..., None], neck_rgb, rgb_body)
 a_body = np.where(BODY, ALPHA * (1 - hair_soft * (~BODY)), 0)
 a_body = np.where(BODY, ALPHA, 0) * np.clip(1.0 - soft(HAIR & ~BODY, 0.4), 0, 1)
@@ -311,7 +346,7 @@ layer("体", rgb_body, a_body)
 
 # --- 前の房
 a_front = np.where(ndimage.binary_dilation(FRONT, iterations=1), ALPHA * np.clip(soft(FRONT, 0.5) * 1.6, 0, 1), 0)
-layer("前の房", RGB, a_front)
+layer("前の房", decontaminate(RGB, a_front), a_front)
 
 # --- 顔: 前髪の下の肌、目と口を消した肌を塗り足す
 eye_erase = np.zeros((H, W), bool)
@@ -364,7 +399,27 @@ layer("口の線", RGB, a_m)
 
 # --- 前髪
 a_bangs = np.where(ndimage.binary_dilation(BANGS, iterations=1), ALPHA * np.clip(soft(BANGS, 0.5) * 1.6, 0, 1), 0)
-layer("前髪", RGB, a_bangs)
+layer("前髪", decontaminate(RGB, a_bangs), a_bangs)
+
+# --- パーツ分けPSD用の髪(see-through と同じ分け方)
+# 「前髪」= 頭の髪すべて(頭頂〜顔まわり)。下端は切り口が目立たないよう、ぼかして消す
+_cut0, _cut1 = P(CFG["PSD用"]["頭の髪の下端"][0]), P(CFG["PSD用"]["頭の髪の下端"][1])
+_fade = 1 - np.clip((YY - _cut0) / (_cut1 - _cut0), 0, 1)
+# 胸の房の根元も含める(除くと、房の始まる高さで前髪に四角い切り欠きができる)。房とはぼかし合わせでつなぐ
+a_headhair = ALPHA * np.clip(soft(HAIR, 0.5) * 1.6, 0, 1) * _fade
+layer("PSD_前髪", decontaminate(RGB, np.where(HAIR, ALPHA, 0)), a_headhair)
+# 「後髪」= 髪全体+隠れた部分の描き足し。頭の上のほうは少し内側に縮めて、前髪がずれても二重に見えないようにする
+# 縮める量は高さに応じてなめらかに減らす(一定の高さで切り替えると輪郭に段差ができる)
+_depth_in = ndimage.distance_transform_edt(HAIR | under_back)
+_shrink = P(8) * (1 - smoothstep(P(150), _cut1, YY))
+_inner = _depth_in > _shrink
+a_backall = np.where(_inner, 1.0, 0) * np.where(HAIR & (YY >= _cut0), ALPHA, 1.0)
+# 髪の見えている部分は元の絵のまま入れておく(前髪・房が少しずれても、下から同じ髪が見えるだけで済む)
+layer("PSD_後髪", decontaminate(np.where(HAIR[..., None], RGB, rgb_back), a_backall), a_backall)
+# 「横髪」(胸の前の房)は、根元の切り口が目立たないよう上端をぼかして消す
+_r0 = P(fr["根元の高さ"])
+_lock_fade = np.clip((YY - _r0) / P(30), 0, 1)
+layer("PSD_前の房", decontaminate(RGB, a_front), a_front * _lock_fade)
 
 # --- 描き起こす部品(口の中・下唇・頬の赤み)。細かく描くため4倍で作ってから縮める
 def painted(name, box, draw_fn, blur=0.8):
@@ -418,6 +473,11 @@ for i, c in enumerate(CFG["頬"]):
             d.line([(xx, h * 0.62), (xx + w * 0.07, h * 0.36)], fill=(235, 90, 110, 140), width=int(0.8 * k * S))
 
     painted(f"頬{'RL'[i]}", box, draw_cheek, blur=0.9)
+
+# 部品を元の位置のまま全体サイズでも保存する(PSD書き出し export_psd.py で使う)
+os.makedirs(os.path.join(OUT, "layers"), exist_ok=True)
+for name, arr in LAYERS.items():
+    Image.fromarray((np.clip(arr, 0, 1) * 255).round().astype(np.uint8), "RGBA").save(os.path.join(OUT, "layers", f"{name}.png"))
 
 for name, arr in LAYERS.items():
     ys, xs = np.where(arr[..., 3] > 0.004)
@@ -520,15 +580,12 @@ def combos(keys):
     return idx
 
 
-def smoothstep(e0, e1, x):
-    t = np.clip((x - e0) / (e1 - e0), 0, 1)
-    return t * t * (3 - 2 * t)
 
 
 # --- 頭の立体的な回転(球に貼った絵を回すと考える)
 HCX, HCY = P(head["中心"])
 HRX, HRY = P(head["半径"])
-YAW_MAX, PITCH_MAX, ROLL_MAX = 14.0, 10.0, 10.0
+YAW_MAX, PITCH_MAX, ROLL_MAX = 11.0, 8.0, 6.0   # 大きくすると首や髪の根元の塗り足しが見えやすくなる
 PX, PY = P(head["首の回転軸"])
 
 def head_warp_disp(ax, ay, xs, ys, depth_bias=0.0):

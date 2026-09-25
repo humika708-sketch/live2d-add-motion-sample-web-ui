@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>閉じ目・開き口の書き出し</title>
+<style>
+  body { font: 14px/1.6 "Hiragino Sans", "Noto Sans JP", sans-serif; background: #1d1f27; color: #e8e8ee; padding: 20px; }
+  button { background: #343849; color: inherit; border: 1px solid #555; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  #cv { display: none; }
+</style>
+</head>
+<body>
+<h1>閉じ目・開き口の書き出し</h1>
+<p>パーツ分けPSD(builder/export_psd.py)で使う「閉じ目」と「開き口」の画像を、表示エンジンで原寸に描いて保存します。<br>
+保存した2枚を <code>models/kurisu/layers/</code> に置いてから、export_psd.py を実行してください。</p>
+<button id="save">閉じ目と開き口を保存</button>
+<p id="status">読み込み中…</p>
+<canvas id="cv"></canvas>
+<script type="module">
+// 指定したパラメータのまま一部の部品だけを原寸で描き、画像として返す
+import { Puppet } from "../runtime/puppet.js";
+const q = new URLSearchParams(location.search);
+const MODEL = q.get("model") || "../models/kurisu/puppet.json";
+const cv = document.getElementById("cv");
+const meta = await (await fetch(MODEL)).json();
+cv.width = meta.canvas.width; cv.height = meta.canvas.height;
+const p = await Puppet.load(cv, MODEL);
+p.view = { x: 0, y: 0, scale: 1 };
+for (const k of Object.keys(p.auto)) p.auto[k] = false;
+
+window.renderParts = (params, ids) => {
+  const saved = p.drawables.map((d) => d.maskOnly);
+  for (const d of p.drawables) if (!ids.includes(d.id)) d.maskOnly = true;   // 描かない部品は切り抜き専用扱いにして隠す
+  for (const [k, v] of Object.entries(params)) p.setParam(k, v);
+  p.update(0);
+  p.render();
+  const url = cv.toDataURL("image/png");
+  p.drawables.forEach((d, i) => { d.maskOnly = saved[i]; });
+  for (const x of p.parameterList) p.setParam(x.id, x.default);
+  return url;
+};
+
+const JOBS = {
+  "閉じ目": [{ ParamEyeLOpen: 0, ParamEyeROpen: 0 }, ["まつ毛L", "まつ毛R"]],
+  "開き口": [{ ParamMouthOpenY: 1 }, ["口の中", "下唇", "口の線"]],
+};
+document.getElementById("save").onclick = () => {
+  for (const [name, [params, ids]] of Object.entries(JOBS)) {
+    const a = document.createElement("a");
+    a.href = window.renderParts(params, ids);
+    a.download = name + ".png";
+    a.click();
+  }
+  document.getElementById("status").textContent = "保存しました";
+};
+document.getElementById("status").textContent = "準備完了";
+window.READY = true;
+</script>
+</body>
+</html>
