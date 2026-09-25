@@ -30,6 +30,10 @@ def load(name):
     return np.array(Image.open(os.path.join(LAYER_DIR, f"{name}.png")).convert("RGBA"))
 
 
+def has(name):
+    return os.path.exists(os.path.join(LAYER_DIR, f"{name}.png"))
+
+
 def merge(*names):
     """同じ役割の部品(左右の目など)を1枚に重ねる"""
     out = None
@@ -59,8 +63,9 @@ def main():
         ("irides", merge("瞳R", "瞳L")),
         ("eyelash", merge("まつ毛R", "まつ毛L")),
         ("eye_close", load("閉じ目")),
-        ("mouth_close", load("口の線")),
-        ("mouth_open", load("開き口")),
+        # 口の差分画像から作った口があればそれを使う(閉じ口と「あ」の口)。無ければ描き起こしの口
+        ("mouth_close", load("口_閉じ") if has("口_閉じ") else load("口の線")),
+        ("mouth_open", load("口_あ") if has("口_あ") else load("開き口")),
         ("front hair", load("PSD_前髪")),
     ]
     h, w = stack[0][1].shape[:2]

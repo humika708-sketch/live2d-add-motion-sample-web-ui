@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFilter
 from scipy import ndimage
 
 from inpaint_lama import inpaint as lama_inpaint
+import mouth_from_images
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -396,6 +397,18 @@ for k, e in EYES.items():
 diff = np.abs(RGB - rgb_face).max(axis=2)
 a_m = np.where(MOUTH_BOX, np.clip(diff / 0.18, 0, 1), 0)
 layer("口の線", RGB, a_m)
+
+# --- 口の差分画像があれば、それを口の部品にする
+HIRES = {}      # 名前 → 高解像度の画像(テクスチャだけ高解像度で持つ部品)
+USE_MOUTH_IMAGES = "口の差分" in CFG
+if USE_MOUTH_IMAGES:
+    print("口の差分画像から口を作成中")
+    _white = RGB * ALPHA[..., None] + (1 - ALPHA[..., None])
+    MOUTHS, _minfo = mouth_from_images.build(CFG, BASE, _white, S)
+    print(f"  倍率 {_minfo['scale']:.4f}、肌の色の補正 {np.round(_minfo['gain'], 3)}")
+    for _n, _v in MOUTHS.items():
+        LAYERS[f"口_{_n}"] = _v["full"]
+        HIRES[f"口_{_n}"] = _v
 
 # --- 前髪
 a_bangs = np.where(ndimage.binary_dilation(BANGS, iterations=1), ALPHA * np.clip(soft(BANGS, 0.5) * 1.6, 0, 1), 0)
@@ -805,21 +818,74 @@ def corner_lift(form, vx):
     u = (vx - mcx) / (mw / 2)
     return -form * P(2.2) * (u * u) + form * P(0.6) * (1 - u * u)
 
-inner = add_part("口の中", "頭", 50, cell=P(3))
-iy0, iy1 = INNER_BOX[1], INNER_BOX[3]
-line_y = mcy
-mouth_forms(inner, lambda op, fm, vx, vy: (
-    0.0,
-    (line_y + (vy - line_y) * max(op, 0.02)) - vy + corner_lift(fm, vx) * 0.8,
-))
-inner["opacity"] = {"keys": [{"param": "ParamMouthOpenY", "values": [0, 0.12, 1]}], "values": [0, 1, 1]}
+MOUTH_GRID = [{"param": "ParamMouthOpenY", "values": [0, 0.5, 1]}, {"param": "ParamMouthForm", "values": [-1, 0, 1]}]
+# 開き(0・0.5・1)×形(への字・普通・笑顔)の各点で表示する口
+MOUTH_TABLE = {(-1, 0): "閉じ", (-1, 0.5): "お小", (-1, 1): "お大",
+               (0, 0): "閉じ", (0, 0.5): "お小", (0, 1): "お大",
+               (1, 0): "笑顔", (1, 0.5): "あ", (1, 1): "あ"}
 
-lower = add_part("下唇", "頭", 51, cell=P(3))
-mouth_forms(lower, lambda op, fm, vx, vy: (0.0, (iy1 - line_y) * (op - 1) + corner_lift(fm, vx) * 0.5))
-lower["opacity"] = {"keys": [{"param": "ParamMouthOpenY", "values": [0, 0.25, 1]}], "values": [0, 1, 1]}
 
-upper = add_part("口の線", "頭", 52, cell=P(3))
-mouth_forms(upper, lambda op, fm, vx, vy: (0.0, -op * P(1.2) + corner_lift(fm, vx)))
+def add_hires_part(name, parent, order, cell):
+    """テクスチャだけ高解像度で持つ部品(メッシュは全身画像の座標)"""
+    v = HIRES[name]
+    rx0, ry0, rx1, ry1 = v["rect"]
+    verts, tris = grid_mesh(LAYERS[name], (rx0, ry0, rx1, ry1), cell)
+    PARTS.append(dict(name=name, parent=parent, order=order, bbox=(rx0, ry0, rx1, ry1), verts=verts, tris=tris, hires=True))
+    return PARTS[-1]
+
+
+if USE_MOUTH_IMAGES:
+    _mcx, _mcy = _minfo["center"]
+    _hw = P(18)
+
+    def _mouth_shape(name, op, fm, vx, vy):
+        """形ごとの変形: 開きかけは上唇の線を基準に縦に縮め、への字は口角を下げる"""
+        top = _mcy - P(1)
+        squash = {"あ": {0: 0.3, 0.5: 0.62, 1: 1.0}, "お大": {0: 0.4, 0.5: 0.72, 1: 1.0},
+                  "お小": {0: 0.55, 0.5: 1.0, 1: 1.15}}.get(name, {0: 1, 0.5: 1, 1: 1})[op]
+        dy = (top + (vy - top) * squash) - vy
+        u = np.clip((vx - _mcx) / _hw, -1, 1)
+        if name == "閉じ":
+            dy += -fm * P(1.3) * u * u if fm < 0 else 0.0
+        return 0.0, dy
+
+    for i, name in enumerate(["閉じ", "笑顔", "お小", "お大", "あ"]):
+        part = add_hires_part(f"口_{name}", "頭", 50 + i, cell=P(2))
+        part["keys"] = MOUTH_GRID
+        part["forms"] = []
+        vals = []
+        for c in combos(MOUTH_GRID):
+            op, fm = c["ParamMouthOpenY"], c["ParamMouthForm"]
+            vals.append(1 if MOUTH_TABLE[(fm, op)] == name else 0)
+            d = []
+            for (vx, vy) in part["verts"]:
+                dx, dy = _mouth_shape(name, op, fm, vx, vy)
+                d += [round(float(dx), 2), round(float(dy), 2)]
+            part["forms"].append(d)
+        # 同じ組の口は、重みを鋭くして(ほぼ切り替え)重ねる。表示エンジンが不透明度を正しく混ぜ直す
+        part["opacity"] = {"keys": MOUTH_GRID, "values": vals}
+        part["blendGroup"] = "口"
+        part["blendSharpen"] = 3
+
+def add_drawn_mouth():
+    """口の差分画像が無いときの、描き起こしの口"""
+    line_y = mcy
+    inner = add_part("口の中", "頭", 50, cell=P(3))
+    mouth_forms(inner, lambda op, fm, vx, vy: (
+        0.0,
+        (line_y + (vy - line_y) * max(op, 0.02)) - vy + corner_lift(fm, vx) * 0.8,
+    ))
+    inner["opacity"] = {"keys": [{"param": "ParamMouthOpenY", "values": [0, 0.12, 1]}], "values": [0, 1, 1]}
+    iy1 = INNER_BOX[3]
+    lower = add_part("下唇", "頭", 51, cell=P(3))
+    mouth_forms(lower, lambda op, fm, vx, vy: (0.0, (iy1 - line_y) * (op - 1) + corner_lift(fm, vx) * 0.5))
+    lower["opacity"] = {"keys": [{"param": "ParamMouthOpenY", "values": [0, 0.25, 1]}], "values": [0, 1, 1]}
+    upper = add_part("口の線", "頭", 52, cell=P(3))
+    mouth_forms(upper, lambda op, fm, vx, vy: (0.0, -op * P(1.2) + corner_lift(fm, vx)))
+
+
+if not USE_MOUTH_IMAGES:
+    add_drawn_mouth()
 
 for i, s in enumerate("RL"):
     ch = add_part(f"頬{s}", "頭", 60 + i, cell=P(6))
@@ -832,12 +898,13 @@ add_part("前髪", "前髪の揺れ", 70, cell=P(6))
 
 def pack(parts, max_w=4096):
     """棚詰めで1枚に並べる"""
-    order = sorted(parts, key=lambda p: -(p["bbox"][3] - p["bbox"][1]))
+    order = sorted(parts, key=lambda p: -(p["bbox"][3] - p["bbox"][1]) * (HIRES[p["name"]]["T"] if p.get("hires") else 1))
     x = y = shelf = 0
     pad = 4
     for p in order:
-        w = p["bbox"][2] - p["bbox"][0]
-        h = p["bbox"][3] - p["bbox"][1]
+        k = HIRES[p["name"]]["T"] if p.get("hires") else 1
+        w = (p["bbox"][2] - p["bbox"][0]) * k
+        h = (p["bbox"][3] - p["bbox"][1]) * k
         if x + w + pad > max_w:
             x, y, shelf = 0, y + shelf + pad, 0
         p["atlas"] = (x, y)
@@ -858,7 +925,11 @@ atlas = np.zeros((ah, aw, 4), np.float32)
 for p in visible:
     x0, y0, x1, y1 = p["bbox"]
     ax, ay = p["atlas"]
-    atlas[ay:ay + (y1 - y0), ax:ax + (x1 - x0)] = LAYERS[p["name"]][y0:y1, x0:x1]
+    if p.get("hires"):
+        hi = HIRES[p["name"]]["hi"]
+        atlas[ay:ay + hi.shape[0], ax:ax + hi.shape[1]] = hi
+    else:
+        atlas[ay:ay + (y1 - y0), ax:ax + (x1 - x0)] = LAYERS[p["name"]][y0:y1, x0:x1]
 Image.fromarray((np.clip(atlas, 0, 1) * 255).round().astype(np.uint8), "RGBA").save(os.path.join(OUT, "texture.png"), optimize=True)
 
 PARAMS = [
@@ -882,10 +953,11 @@ for p in PARTS:
     pos, uvs = [], []
     for (vx, vy) in p["verts"]:
         pos += [round(vx, 2), round(vy, 2)]
-        uvs += [round((ax + (vx - x0)) / aw, 6), round((ay + (vy - y0)) / ah, 6)]
+        k = HIRES[p["name"]]["T"] if p.get("hires") else 1
+        uvs += [round((ax + (vx - x0) * k) / aw, 6), round((ay + (vy - y0) * k) / ah, 6)]
     d = dict(id=p["name"], parent=p["parent"], order=p["order"], texture=0,
              positions=pos, uvs=uvs, indices=p["tris"])
-    for key in ("keys", "forms", "opacity", "masks", "maskOnly"):
+    for key in ("keys", "forms", "opacity", "masks", "maskOnly", "blendGroup", "blendSharpen"):
         if key in p:
             d[key] = p[key]
     drawables.append(d)

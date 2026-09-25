@@ -46,6 +46,7 @@ const JOBS = {
 };
 document.getElementById("save").onclick = () => {
   for (const [name, [params, ids]] of Object.entries(JOBS)) {
+    if (!ids.some((id) => p.byId.has(id))) continue;   // 口の差分画像を使うモデルには描き起こしの口が無い
     const a = document.createElement("a");
     a.href = window.renderParts(params, ids);
     a.download = name + ".png";

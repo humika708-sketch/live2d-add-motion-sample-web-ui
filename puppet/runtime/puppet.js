@@ -572,6 +572,30 @@ export class Puppet {
         d.out[i] = tmp[0]; d.out[i + 1] = tmp[1];
       }
     }
+    this._blendGroups();
+  }
+
+  // 差し替え用の組(口の形の描き分けなど)の不透明度を直す。
+  // 重みを鋭くして(ほぼ切り替えに近づけて)から、下から順に重ねたときに
+  // ちょうど重みどおりに混ざる不透明度(自分の重み ÷ ここまでの重みの合計)にする
+  _blendGroups() {
+    const groups = new Map();
+    for (const d of this.drawOrder) {
+      if (!d.blendGroup) continue;
+      if (!groups.has(d.blendGroup)) groups.set(d.blendGroup, []);
+      groups.get(d.blendGroup).push(d);
+    }
+    for (const list of groups.values()) {
+      const pw = list[0].blendSharpen || 1;
+      const ws = list.map((d) => Math.pow(Math.max(0, d.opacityNow), pw));
+      const sum = ws.reduce((a, b) => a + b, 0) || 1;
+      let acc = 0;
+      list.forEach((d, i) => {
+        const w = ws[i] / sum;
+        acc += w;
+        d.opacityNow = acc > 1e-6 ? w / acc : 0;
+      });
+    }
   }
 
   render() {
