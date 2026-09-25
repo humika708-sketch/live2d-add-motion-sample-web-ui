@@ -63,9 +63,10 @@ def main():
         ("irides", merge("瞳R", "瞳L")),
         ("eyelash", merge("まつ毛R", "まつ毛L")),
         ("eye_close", load("閉じ目")),
-        # 口の差分画像から作った口があればそれを使う(閉じ口と「あ」の口)。無ければ描き起こしの口
+        # 口の差分画像から作った口があればそれを使う。無ければ描き起こしの口
         ("mouth_close", load("口_閉じ") if has("口_閉じ") else load("口の線")),
-        ("mouth_open", load("口_あ") if has("口_あ") else load("開き口")),
+        # 開き口は、口パクに向く「中開き」を優先する
+        ("mouth_open", load("口_中開き") if has("口_中開き") else load("口_あ") if has("口_あ") else load("開き口")),
         ("front hair", load("PSD_前髪")),
     ]
     h, w = stack[0][1].shape[:2]

@@ -141,25 +141,27 @@ function compileCurve(seg, restricted) {
     const type = seg[i];
     if (type === 1) {
       const [c1t, c1v, c2t, c2v, t1, v1] = seg.slice(i + 1, i + 7);
-      pieces.push({ t0, t1, f: (t) => {
-        let s = (t - t0) / (t1 - t0 || 1);
+      // 区間の始点は必ず定数に写してから使う(t0・v0 はこの後で書き換わるため、そのまま閉じ込めると最後の区間の値になってしまう)
+      const s0 = t0, a0 = v0;
+      pieces.push({ t0: s0, t1, f: (t) => {
+        let s = (t - s0) / (t1 - s0 || 1);
         if (!restricted) {
           // 時間軸もベジェなので、二分法で時刻に対応する媒介変数を求める
           let lo = 0, hi = 1;
           for (let k = 0; k < 20; k++) {
             const mid = (lo + hi) / 2;
-            if (bezierAt(t0, c1t, c2t, t1, mid) < t) lo = mid; else hi = mid;
+            if (bezierAt(s0, c1t, c2t, t1, mid) < t) lo = mid; else hi = mid;
           }
           s = (lo + hi) / 2;
         }
-        return bezierAt(v0, c1v, c2v, v1, s);
+        return bezierAt(a0, c1v, c2v, v1, s);
       } });
       t0 = t1; v0 = v1; i += 7;
     } else {
-      const t1 = seg[i + 1], v1 = seg[i + 2], a = v0;
-      if (type === 0) pieces.push({ t0, t1, f: (t) => a + ((v1 - a) * (t - t0)) / (t1 - t0 || 1) });
-      else if (type === 2) pieces.push({ t0, t1, f: () => a });   // 段差: 区間の終わりまで前の値
-      else pieces.push({ t0, t1, f: () => v1 });                  // 逆段差: 区間の頭から次の値
+      const t1 = seg[i + 1], v1 = seg[i + 2], a = v0, s0 = t0;
+      if (type === 0) pieces.push({ t0: s0, t1, f: (t) => a + ((v1 - a) * (t - s0)) / (t1 - s0 || 1) });
+      else if (type === 2) pieces.push({ t0: s0, t1, f: () => a });   // 段差: 区間の終わりまで前の値
+      else pieces.push({ t0: s0, t1, f: () => v1 });                  // 逆段差: 区間の頭から次の値
       t0 = t1; v0 = v1; i += 3;
     }
   }
@@ -474,6 +476,21 @@ export class Puppet {
     };
     return ctx;
   }
+  // 表情: 値の組(例 {ParamEyeForm: 1, ParamMouthForm: -1})へ fade 秒かけて切り替え、そのまま保つ。
+  // 前の表情で動かしていた値は初期値へ戻る。まばたき・口パク・モーションはこの上に重なる。
+  setExpression(params = {}, fade = 0.3) {
+    const prev = this._exprNow || {};
+    const keys = new Set([...Object.keys(prev), ...Object.keys(params)]);
+    const e = { from: {}, to: {}, t: 0, dur: Math.max(fade, 1e-3) };
+    for (const k of keys) {
+      const info = this.paramInfo.get(k);
+      if (!info) continue;
+      e.from[k] = prev[k] ?? info.default;
+      e.to[k] = clamp(params[k] ?? info.default, info.min, info.max);
+    }
+    this._expr = e;
+  }
+
   // モーション再生(URL、motion3.json のオブジェクト、Motion のいずれか)。終了時に解決する Promise を返す。
   async playMotion(m, opts) {
     const motion = m instanceof Motion ? m : typeof m === "string" ? await Motion.load(m, opts) : new Motion(m, opts);
@@ -489,6 +506,20 @@ export class Puppet {
     this.time += dt;
     const P = this.params;
     for (const [k, v] of this.userParams) P.set(k, v);
+
+    // 表情(利用者の指定値の上に、なめらかに切り替わる値を置く)
+    if (this._expr) {
+      const e = this._expr;
+      e.t += dt;
+      const w = ease(Math.min(1, e.t / e.dur));
+      const now = {};
+      for (const k of Object.keys(e.to)) {
+        now[k] = e.from[k] + (e.to[k] - e.from[k]) * w;
+        const info = this.paramInfo.get(k);
+        if (Math.abs(e.to[k] - info.default) > 1e-6 || w < 1) P.set(k, now[k]);
+      }
+      this._exprNow = now;
+    }
 
     // モーション
     const touched = this.motions.update(this.time, P);

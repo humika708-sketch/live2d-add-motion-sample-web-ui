@@ -40,6 +40,9 @@
   <div class="btns" id="motions"></div>
   <div style="margin-top:6px" class="btns"><button id="stopMotion">モーション停止</button><button id="idleToggle">待機モーション: 切</button></div>
 
+  <h2>表情</h2>
+  <div class="btns" id="expressions"></div>
+
   <h2>自動の動き</h2>
   <label class="chk"><input type="checkbox" id="autoLook" checked> マウスを目で追う</label>
   <label class="chk"><input type="checkbox" id="autoBlink" checked> まばたき</label>
@@ -122,6 +125,19 @@ for (const m of motionList) {
 }
 if (!motionList.length) mbox.innerHTML = '<div class="note">モーションがありません</div>';
 document.getElementById("stopMotion").onclick = () => puppet.stopMotion();
+
+// 表情(motions/expressions.json)
+let expressions = [];
+try { expressions = await (await fetch(MOTION_DIR + "expressions.json")).json(); } catch { expressions = []; }
+const ebox = document.getElementById("expressions");
+for (const ex of expressions) {
+  const b = document.createElement("button");
+  b.textContent = ex.name;
+  b.onclick = () => { puppet.setExpression(ex.params, 0.3); status.textContent = `表情: ${ex.name}`; };
+  ebox.appendChild(b);
+}
+if (!expressions.length) ebox.innerHTML = '<div class="note">表情がありません</div>';
+window.expressions = expressions;
 let idleOn = false;
 document.getElementById("idleToggle").onclick = (e) => {
   idleOn = !idleOn;
@@ -181,6 +197,7 @@ window.exportSpriteSheet = exportSpriteSheet;
 // 確認用: ?set=ParamAngleX:30,ParamEyeLOpen:0 で値を固定、?auto=0 で自動の動きを止める、?play=ファイル名 で再生
 if (q.get("auto") === "0") { for (const k of Object.keys(puppet.auto)) if (k !== "physics") puppet.auto[k] = false; }
 if (q.get("set")) for (const kv of q.get("set").split(",")) { const [k, v] = kv.split(":"); puppet.setParam(k, +v); }
+if (q.get("expr")) { const ex = expressions.find((x) => x.name === q.get("expr")); if (ex) puppet.setExpression(ex.params, 0.01); }
 if (q.get("play")) puppet.playMotion(MOTION_DIR + q.get("play"));
 status.textContent = "準備完了";
 window.READY = true;

@@ -20,16 +20,21 @@ def _load(path):
     return np.array(Image.open(path).convert("RGB"))
 
 
-def _align_to_base(base, img):
-    """img を base に合わせる相似変換(2×3)。口より上と横の髪だけを使う"""
-    h, w = base.shape[:2]
+def _upper_mask(shape):
+    """口より上(鼻・前髪の先・耳)と、左右の横髪だけを使うための範囲。画像ごとの大きさに合わせて作る"""
+    h, w = shape[:2]
     mask = np.zeros((h, w), np.uint8)
     mask[: int(h * 0.235)] = 255
     mask[int(h * 0.235): int(h * 0.365), : int(w * 0.15)] = 255
     mask[int(h * 0.235): int(h * 0.365), int(w * 0.85):] = 255
+    return mask
+
+
+def _align_to_base(base, img):
+    """img を base に合わせる相似変換(2×3)。口より上と横の髪だけを使う(画像の大きさが違ってもよい)"""
     sift = cv2.SIFT_create(nfeatures=6000)
-    kb, db = sift.detectAndCompute(cv2.cvtColor(base, cv2.COLOR_RGB2GRAY), mask)
-    ki, di = sift.detectAndCompute(cv2.cvtColor(img, cv2.COLOR_RGB2GRAY), mask)
+    kb, db = sift.detectAndCompute(cv2.cvtColor(base, cv2.COLOR_RGB2GRAY), _upper_mask(base.shape))
+    ki, di = sift.detectAndCompute(cv2.cvtColor(img, cv2.COLOR_RGB2GRAY), _upper_mask(img.shape))
     pairs = cv2.BFMatcher().knnMatch(di, db, k=2)
     good = [p for p, q in pairs if p.distance < 0.7 * q.distance]
     if len(good) < 6:
@@ -38,6 +43,18 @@ def _align_to_base(base, img):
     dst = np.float32([kb[g.trainIdx].pt for g in good])
     M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3)
     return M, int(inl.sum())
+
+
+def align_all(cfg, base_dir):
+    """確認用: 基準に合わせた各差分の変換と対応点の数を返す"""
+    mc = cfg["口の差分"]
+    folder = os.path.join(base_dir, mc["フォルダ"])
+    base_img = _load(os.path.join(folder, mc["基準"]))
+    out = {}
+    for name, fname in mc["形"].items():
+        img = _load(os.path.join(folder, fname))
+        out[name] = (np.array([[1, 0, 0], [0, 1, 0]], float), 0) if fname == mc["基準"] else _align_to_base(base_img, img)
+    return out
 
 
 def build(cfg, base_dir, full_rgb, S, T=3):

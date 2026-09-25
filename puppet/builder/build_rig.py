@@ -305,7 +305,8 @@ layer("後ろ髪", decontaminate(rgb_back, a_back), a_back)
 # --- 体: 前の房の下を塗り足し、首をあごの下へ延ばす
 _lock_all = ndimage.binary_dilation(FRONT, iterations=int(6 * S)) & (ALPHA > 0.5)   # 房全体(毛先の薄い部分も含める)
 under_body = _lock_all & inside_body & (YY >= y_start - P(10))
-# 首の延長: 各列で「あごのすぐ下の首の色」を上へ伸ばす。
+# 首の延長: 各列で、あごのすぐ下の首を「あごの線で折り返して」上へ映す。
+# 境目で色がそのままつながり、あごの影の濃淡も続くので、頭が動いて首が見えても継ぎ目が出ない。
 # 首の幅は、あごの下に肌がある列だけを使うことで自動的に決まる(髪のある列には伸ばさない)
 skin_like_body = (VAL > 100) & ((RGB[..., 0] - RGB[..., 2]) * 255 > 18)
 ext = P(CFG["首の延長"])
@@ -321,12 +322,17 @@ for x in range(int(pcx - P(60)), int(pcx + P(60))):
     ok = ys[BODY[ys, x] & skin_like_body[ys, x]]
     if len(ok) < 3:
         continue
-    y0 = ok[0]
-    # あごのすぐ下は影で暗いので、少し下の明るい首の色を使う
-    c = RGB[y0 + int(10 * S):y0 + int(24 * S), x].mean(axis=0)
+    # あごの輪郭線の名残(輪郭線と肌の間の数画素)も塗り替えるため、少し下のきれいな首から折り返す
+    y0 = ok[0] + int(2 * S)
+    # 下向きに肌が続く長さ(襟に当たるまで)
+    y_end = y0
+    while y_end + 1 < H and BODY[y_end + 1, x] and skin_like_body[y_end + 1, x]:
+        y_end += 1
     y_top = int(max(y_jaw - ext, 0))
+    for y in range(y_top, y0):
+        src = min(y0 + (y0 - 1 - y), y_end)     # あごの線で折り返した位置(襟より下には行かない)
+        neck_rgb[y, x] = RGB[src, x]
     neck[y_top:y0, x] = True
-    neck_rgb[y_top:y0, x] = c
 neck &= HEAD_POLY | (YY < P(270))
 # 横方向に少しならして筋っぽさを消す
 neck_rgb = cv2.GaussianBlur(neck_rgb, (0, 0), 1.2 * S)
@@ -341,7 +347,8 @@ rgb_body = np.where(neck[..., None], neck_rgb, rgb_body)
 a_body = np.where(BODY, ALPHA * (1 - hair_soft * (~BODY)), 0)
 a_body = np.where(BODY, ALPHA, 0) * np.clip(1.0 - soft(HAIR & ~BODY, 0.4), 0, 1)
 # 左右の端だけぼかす(上下は顔に隠れる)
-neck_soft = np.clip(cv2.GaussianBlur(neck.astype(np.float32), (0, 0), 1.0 * S) * 1.6, 0, 1) * neck
+# 左右の端は広めにぼかして、後ろ髪へなじませる(端の影の色が首を傾けたときに灰色のしみに見えるため)
+neck_soft = np.clip(cv2.GaussianBlur(neck.astype(np.float32), (0, 0), 2.5 * S) * 1.5 - 0.15, 0, 1) * neck
 a_body = np.maximum(a_body, np.maximum(under_body.astype(np.float32), neck_soft))
 layer("体", rgb_body, a_body)
 
@@ -371,6 +378,8 @@ face_fill = (BANGS & FACE_HULL) | eye_erase | MOUTH_BOX
 face_fill &= HEAD_POLY
 rgb_face = diffuse_fill(RGB, skin_known, face_fill, iters=80)
 a_face = np.where(FACE, ALPHA, 0) * np.clip(1.0 - soft(HAIR & ~BANGS, 0.4), 0, 1)
+# 顔の下端(あごの輪郭線の少し下で多角形に切った所)は、ぼかして階段状のギザギザを消す
+a_face *= np.clip(soft(HEAD_POLY, 0.9) * 1.25, 0, 1)
 a_face = np.maximum(a_face, face_fill.astype(np.float32))
 layer("顔", rgb_face, a_face)
 
@@ -378,9 +387,28 @@ layer("顔", rgb_face, a_face)
 for k, e in EYES.items():
     op = e["opening"]
     # 白目: 開いている部分から瞳を消して白で塗り、少し外側まで延ばす
-    white_known = op & ~ndimage.binary_dilation(e["iris"], iterations=max(1, int(S)))
+    # 白目の色は「明るく色の薄い画素」だけから、行ごとの中央値で取る(上まぶたの影の濃淡を残すため)。
+    # 瞳のあった所もこの色で塗るので、瞳を小さくしたときに元の瞳の跡が出ない
     grow = ndimage.binary_dilation(op, iterations=int(2 * S))
-    rgb_w = diffuse_fill(RGB, white_known, (grow & ~white_known), iters=30)
+    # この子の瞳は薄い藤色なので、彩度のしきい値を低くして瞳の明るい部分を白目と取り違えないようにする
+    sclera = op & (VAL > 200) & (SAT < 28) & ~ndimage.binary_dilation(e["iris_ell"], iterations=int(3 * S))
+    ys_g = np.where(grow.any(axis=1))[0]
+    row_col = {}
+    for y in ys_g:
+        px = RGB[y][sclera[y]]
+        if len(px) >= 2:
+            row_col[y] = np.median(px, axis=0)
+    known_rows = sorted(row_col)
+    rgb_w = RGB.copy()
+    if known_rows:
+        for y in ys_g:
+            near = min(known_rows, key=lambda r: abs(r - y))
+            c = row_col[near]
+            fill_row = grow[y] & ~sclera[y]
+            rgb_w[y][fill_row] = c
+        # 行ごとの塗りの境目をならす
+        blur = cv2.GaussianBlur(rgb_w, (0, 0), 0.8 * S)
+        rgb_w = np.where((grow & ~sclera)[..., None], blur, rgb_w)
     layer(f"白目{k}", rgb_w, grow.astype(np.float32))
     # 瞳: 楕円全体まで延ばす(まぶたの下に隠れていた部分も描いておく)
     iris_full = e["iris_ell"]
@@ -598,7 +626,7 @@ def combos(keys):
 # --- 頭の立体的な回転(球に貼った絵を回すと考える)
 HCX, HCY = P(head["中心"])
 HRX, HRY = P(head["半径"])
-YAW_MAX, PITCH_MAX, ROLL_MAX = 11.0, 8.0, 6.0   # 大きくすると首や髪の根元の塗り足しが見えやすくなる
+YAW_MAX, PITCH_MAX, ROLL_MAX = 13.0, 9.0, 9.0   # 参照シートの角度参考と見比べて決めた。大きくすると首や髪の根元の塗り足しが見えやすくなる
 PX, PY = P(head["首の回転軸"])
 
 def head_warp_disp(ax, ay, xs, ys, depth_bias=0.0):
@@ -724,7 +752,20 @@ front_parent = hair_sway("前の房", "ParamHairSide", P(fr["根元の高さ"]),
 add_part("後ろ髪", back_parent, 0, cell=P(14))
 add_part("体", "体", 10, cell=P(20))
 add_part("前の房", front_parent, 20, cell=P(10))
-add_part("顔", "頭", 30, cell=P(8))
+face_part = add_part("顔", "頭", 30, cell=P(8))
+if USE_MOUTH_IMAGES:
+    # 差分の「大開き」では、あご先が口の線からあご先までの長さの約1割下がっていたので、それに合わせる
+    _jaw_cx, _jaw_y0 = P(CFG["口の差分"]["全身の口の線の中心"])
+    _chin = P(CFG["口の差分"]["全身の鼻先とあご先"][1])
+    _drop = (_chin[1] - _jaw_y0) * 0.11
+    _half = P(46)
+    face_part["keys"] = [{"param": "ParamMouthOpenY", "values": [0, 1]}]
+    face_part["forms"] = [[0.0] * (2 * len(face_part["verts"]))]
+    f = []
+    for (vx, vy) in face_part["verts"]:
+        w = smoothstep(_jaw_y0 - P(2), _chin[1] - P(4), vy) * max(0.0, 1 - abs(vx - _jaw_cx) / _half) ** 1.2
+        f += [0.0, round(float(_drop * w), 2)]
+    face_part["forms"].append(f)
 
 EYE_KEYS = [{"param": None, "values": [0, 1]}, {"param": None, "values": [0, 1]}]
 
@@ -732,7 +773,8 @@ def eye_parts(k, order):
     e = EYES[k]
     open_id = f"ParamEye{k}Open"
     smile_id = f"ParamEye{k}Smile"
-    keys = [{"param": open_id, "values": [0, 1]}, {"param": smile_id, "values": [0, 1]}]
+    keys = [{"param": open_id, "values": [0, 1]}, {"param": smile_id, "values": [0, 1]},
+            {"param": "ParamEyeForm", "values": [-1, 0, 1]}]
     cols = sorted(e["cols"])
     n = 17
     xs = np.linspace(cols[0] - 0.5, cols[-1] + 0.5, n)
@@ -750,9 +792,14 @@ def eye_parts(k, order):
     bump = np.sin(np.pi * tt)          # 中央ほど大きい
     arc_y = bot - hgt * 0.35 - hgt * 0.45 * bump   # 笑い目(^^)の弧
 
-    def shape(op, sm):
-        """目の開き・笑いの度合いに応じた上端・下端"""
-        t_open = top
+    # 目頭側ほど1(右目=画面の左の目は右側が目頭、左目は左側が目頭)
+    t_inner = tt if k == "R" else 1 - tt
+
+    def shape(op, sm, fm=0):
+        """目の開き・笑い・形(-1 困り目 〜 1 怒り目)に応じた上端・下端"""
+        # 怒り目は目頭側の上まぶたを、困り目は目尻側の上まぶたを下げる(参照シートの表情参考より)
+        lid = np.where(fm > 0, fm * hgt * 0.40 * t_inner ** 1.4, -fm * hgt * 0.30 * (1 - t_inner) ** 1.4) + abs(fm) * hgt * 0.04
+        t_open = np.minimum(top + lid, bot - hgt * 0.25)
         b_open = bot - sm * hgt * 0.28 * bump            # 笑うと下まぶたが上がる
         close_line = bot - hgt * 0.30 + hgt * 0.08 * bump   # 閉じた目はゆるく下に弧を描く
         t_closed = close_line * (1 - sm) + arc_y * sm
@@ -764,7 +811,7 @@ def eye_parts(k, order):
     verts, tris = strip_mesh(xs, top, bot)
     forms = []
     for c in combos(keys):
-        t, b = shape(c[open_id], c[smile_id])
+        t, b = shape(c[open_id], c[smile_id], c["ParamEyeForm"])
         d = []
         for i in range(n):
             d += [0.0, float(t[i] - top[i]), 0.0, float(b[i] - bot[i])]
@@ -775,11 +822,17 @@ def eye_parts(k, order):
     # 瞳: 視線で動く
     ir = add_part(f"瞳{k}", "頭", order + 2, cell=P(4), masks=[mask["name"]])
     ew = cols[-1] - cols[0]
-    ir["keys"] = [{"param": "ParamEyeBallX", "values": [-1, 0, 1]}, {"param": "ParamEyeBallY", "values": [-1, 0, 1]}]
+    ir["keys"] = [{"param": "ParamEyeBallX", "values": [-1, 0, 1]}, {"param": "ParamEyeBallY", "values": [-1, 0, 1]},
+                  {"param": "ParamEyeBallForm", "values": [-1, 0, 1]}]
     ir["forms"] = []
+    icx, icy = P(CFG["目"][k]["瞳の中心"])
     for c in combos(ir["keys"]):
         dx, dy = c["ParamEyeBallX"] * ew * 0.17, -c["ParamEyeBallY"] * float(hgt.mean()) * 0.18
-        ir["forms"].append([round(dx, 2), round(dy, 2)] * len(ir["verts"]))
+        sc = {-1: 0.8, 0: 1.0, 1: 1.1}[c["ParamEyeBallForm"]]   # 驚いたときは瞳が小さくなる(参照シートの驚き顔に合わせて控えめに)
+        f = []
+        for (vx, vy) in ir["verts"]:
+            f += [round(dx + (vx - icx) * (sc - 1), 2), round(dy + (vy - icy) * (sc - 1), 2)]
+        ir["forms"].append(f)
 
     # まつ毛: 目の上端の動きに合わせて下がる
     lash = add_part(f"まつ毛{k}", "頭", order + 3, cell=P(2))
@@ -787,7 +840,7 @@ def eye_parts(k, order):
     lash["forms"] = []
     lx0, ly0, lx1, ly1 = lash["bbox"]
     for c in combos(keys):
-        t, b = shape(c[open_id], c[smile_id])
+        t, b = shape(c[open_id], c[smile_id], c["ParamEyeForm"])
         d = []
         for (vx, vy) in lash["verts"]:
             dt = float(np.interp(vx, xs, t - top))
@@ -818,11 +871,15 @@ def corner_lift(form, vx):
     u = (vx - mcx) / (mw / 2)
     return -form * P(2.2) * (u * u) + form * P(0.6) * (1 - u * u)
 
-MOUTH_GRID = [{"param": "ParamMouthOpenY", "values": [0, 0.5, 1]}, {"param": "ParamMouthForm", "values": [-1, 0, 1]}]
-# 開き(0・0.5・1)×形(への字・普通・笑顔)の各点で表示する口
-MOUTH_TABLE = {(-1, 0): "閉じ", (-1, 0.5): "お小", (-1, 1): "お大",
-               (0, 0): "閉じ", (0, 0.5): "お小", (0, 1): "お大",
-               (1, 0): "笑顔", (1, 0.5): "あ", (1, 1): "あ"}
+OPEN_STEPS = [0, 0.33, 0.67, 1]
+MOUTH_GRID = [{"param": "ParamMouthOpenY", "values": OPEN_STEPS}, {"param": "ParamMouthForm", "values": [-1, 0, 1]}]
+# 開き(4段階)×形(への字・普通・笑顔)の各点で表示する口。差分に無い形は近い形で代用する
+MOUTH_ROWS = {-1: ["閉じ", "お小", "お大", "大開き"],
+              0: ["閉じ", "え", "中開き", "大開き"],
+              1: ["笑顔", "あ", "あ", "あ"]}
+MOUTH_ROWS_FALLBACK = {"え": "お小", "中開き": "お大", "大開き": "お大"}
+# 各形が「ちょうどの大きさ」で見える開きの値(これより小さい開きでは縦に縮めて見せる)
+MOUTH_MAIN_OPEN = {"お小": 0.33, "え": 0.33, "お大": 0.67, "中開き": 0.67, "あ": 0.67, "大開き": 1.0}
 
 
 def add_hires_part(name, parent, order, cell):
@@ -837,19 +894,32 @@ def add_hires_part(name, parent, order, cell):
 if USE_MOUTH_IMAGES:
     _mcx, _mcy = _minfo["center"]
     _hw = P(18)
+    _names = [n for n in ["閉じ", "笑顔", "お小", "お大", "あ", "え", "中開き", "大開き"] if f"口_{n}" in HIRES]
+    MOUTH_TABLE = {}
+    for fm, row in MOUTH_ROWS.items():
+        for op, n in zip(OPEN_STEPS, row):
+            MOUTH_TABLE[(fm, op)] = n if f"口_{n}" in HIRES else MOUTH_ROWS_FALLBACK.get(n, n)
+    # 形ごとの口の上端(縦に縮めるときの基準)
+    _mouth_top = {}
+    for n in _names:
+        a = LAYERS[f"口_{n}"][..., 3]
+        band = a[:, int(_mcx - P(4)):int(_mcx + P(4))] > 0.4
+        rows = np.where(band.any(axis=1))[0]
+        _mouth_top[n] = float(rows.min()) if len(rows) else _mcy
 
     def _mouth_shape(name, op, fm, vx, vy):
-        """形ごとの変形: 開きかけは上唇の線を基準に縦に縮め、への字は口角を下げる"""
-        top = _mcy - P(1)
-        squash = {"あ": {0: 0.3, 0.5: 0.62, 1: 1.0}, "お大": {0: 0.4, 0.5: 0.72, 1: 1.0},
-                  "お小": {0: 0.55, 0.5: 1.0, 1: 1.15}}.get(name, {0: 1, 0.5: 1, 1: 1})[op]
-        dy = (top + (vy - top) * squash) - vy
+        """形ごとの変形: 開きかけは口の上端を基準に縦に縮め、への字は閉じ口の口角を下げる"""
+        dy = 0.0
+        if name in MOUTH_MAIN_OPEN:
+            squash = float(np.clip(1 + (op - MOUTH_MAIN_OPEN[name]) * 1.0, 0.3, 1.12))
+            top = _mouth_top[name]
+            dy = (top + (vy - top) * squash) - vy
         u = np.clip((vx - _mcx) / _hw, -1, 1)
-        if name == "閉じ":
-            dy += -fm * P(1.3) * u * u if fm < 0 else 0.0
+        if name == "閉じ" and fm < 0:
+            dy += -fm * P(1.3) * u * u
         return 0.0, dy
 
-    for i, name in enumerate(["閉じ", "笑顔", "お小", "お大", "あ"]):
+    for i, name in enumerate(_names):
         part = add_hires_part(f"口_{name}", "頭", 50 + i, cell=P(2))
         part["keys"] = MOUTH_GRID
         part["forms"] = []
@@ -938,6 +1008,7 @@ PARAMS = [
     ("ParamEyeLOpen", "左目の開き", 0, 1, 1), ("ParamEyeLSmile", "左目の笑い", 0, 1, 0),
     ("ParamEyeROpen", "右目の開き", 0, 1, 1), ("ParamEyeRSmile", "右目の笑い", 0, 1, 0),
     ("ParamEyeBallX", "視線 左右", -1, 1, 0), ("ParamEyeBallY", "視線 上下", -1, 1, 0),
+    ("ParamEyeForm", "目の形(困り目↔怒り目)", -1, 1, 0), ("ParamEyeBallForm", "瞳の大きさ", -1, 1, 0),
     ("ParamMouthOpenY", "口の開き", 0, 1, 0), ("ParamMouthForm", "口の形(笑顔↔への字)", -1, 1, 0),
     ("ParamCheek", "頬の赤み", 0, 1, 0),
     ("ParamBodyAngleX", "体の傾き 左右", -10, 10, 0), ("ParamBodyAngleZ", "体の回転", -10, 10, 0),
