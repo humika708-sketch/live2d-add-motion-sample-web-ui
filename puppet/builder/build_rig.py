@@ -24,6 +24,7 @@ from scipy import ndimage
 from inpaint_lama import inpaint as lama_inpaint
 import mouth_from_images
 import eye_parts as eyelib
+import closed_eye_ref
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -473,6 +474,30 @@ for k, e in EYES.items():
     layer(f"下まぶた{k}", col_d, a_d * ALPHA)
     # 目の形(切り抜き用。見た目には描かない)
     layer(f"目の形{k}", np.ones((H, W, 3), np.float32), op.astype(np.float32))
+
+# --- 手描きの閉じ目: 同じ構図で目だけ閉じた絵があれば、その閉じ目の線を「肌との差」で取り出す
+if "閉じ目の差分" in CFG:
+    print("閉じ目の画像から閉じ目を作成中")
+    _closed, _cvalid, _cinfo = closed_eye_ref.build(CFG, BASE, H, W, S)
+    print(f"  倍率 {_cinfo['scale']:.4f}、対応点 {_cinfo['points']}、ずれ {_cinfo['residual']:.2f}画素")
+    _chsv = cv2.cvtColor((_closed * 255).astype(np.uint8), cv2.COLOR_RGB2HSV_FULL).astype(np.float32)
+    _chue = _chsv[..., 0] * 360 / 256
+    # 閉じ目の絵の髪(明るい髪の色)とその縁取り、元の絵の前髪は除く(前髪は上に重なる部品が描く)。
+    # 閉じ目の線自体も赤茶色なので、暗い画素は髪とみなさない
+    _chair = (_chue >= hc["色相の下限"]) & (_chue <= hc["色相の上限"]) & (_chsv[..., 1] > hc["彩度の下限"]) & (_chsv[..., 2] > 100)
+    _chair = remove_small(_chair, int(6 * S * S))
+    _cexcl = ndimage.binary_dilation(_chair | BANGS, iterations=max(1, int(round(1.5 * S))))
+    for k in ("R", "L"):
+        x0, y0, x1, y1 = P(CFG["目"][k]["範囲"])
+        reg = (XX >= x0 - P(4)) & (XX <= x1 + P(4)) & (YY >= y0) & (YY <= y1 + P(8))
+        reg = reg & _cvalid & ~_cexcl & FACE
+        col_c, a_c = eyelib.diff_layer(_closed, EYE_BASE, reg.astype(np.float32), strength=0.30, darker_only=True)
+        # 肌の色のわずかな違いで全体がうっすら残らないよう、弱い差は捨てる
+        a_c = np.clip((a_c - 0.10) / 0.90, 0, 1)
+        a_c = remove_small(a_c > 0.05, int(4 * S * S)) * a_c
+        # 範囲の縁で切れ目が出ないよう、縁をぼかす
+        a_c *= np.clip(soft(reg, 0.8) * 1.3, 0, 1)
+        layer(f"閉じ目{k}", col_c, a_c.astype(np.float32))
 
 # --- 口: 元の口の線を「肌との差」で切り出す
 diff = np.abs(RGB - rgb_face).max(axis=2)
@@ -961,6 +986,19 @@ def eye_parts(k, order):
     corner_line = ya + (yb - ya) * (xs - xa) / max(xb - xa, 1)
     closed_line = corner_line + 0.16 * hc * bump           # 閉じた目: 目頭と目尻を結ぶ線から、ゆるく下へ弧を描く
     smile_line = corner_line + 0.06 * hc - 0.30 * hc * bump  # 笑い目(^^): 上へ弧を描く
+    drawn = f"閉じ目{k}" in LAYERS and LAYERS[f"閉じ目{k}"][..., 3].max() > 0.05
+    if drawn:
+        # 手描きの閉じ目があれば、閉じる位置をその線に合わせる(途中でまつ毛と手描きの線が二重に見えないように)。
+        # 列ごとの線の中心に2次曲線を当てはめ、まつ毛の下の縁が線の少し下に来るようにする
+        ca = LAYERS[f"閉じ目{k}"][..., 3]
+        cxs, cys, cws = [], [], []
+        for x in range(int(xa), int(xb) + 1):
+            col = ca[:, x] ** 2
+            if col.max() > 0.3:
+                cxs.append(x); cys.append(float((np.arange(H) * col).sum() / col.sum())); cws.append(float(col.max()))
+        if len(cxs) >= 8:
+            coef = np.polyfit(cxs, cys, 2, w=cws)
+            closed_line = np.polyval(coef, xs) + P(1.0)
     # 目頭側ほど1(右目=画面の左の目は右側が目頭、左目は左側が目頭)
     t_inner = tt if k == "R" else 1 - tt
 
@@ -986,7 +1024,7 @@ def eye_parts(k, order):
         forms.append(np.round(d, 2).tolist())
     mask = add_part(f"目の形{k}", "頭", order, mesh=(verts, tris), keys=keys, forms=forms, maskOnly=True)
 
-    add_part(f"白目{k}", "頭", order + 1, cell=P(4), masks=[mask["name"]])
+    white = add_part(f"白目{k}", "頭", order + 1, cell=P(4), masks=[mask["name"]])
     # 瞳: 視線で動く
     ir = add_part(f"瞳{k}", "頭", order + 2, cell=P(4), masks=[mask["name"]])
     ew = xb - xa
@@ -1031,6 +1069,17 @@ def eye_parts(k, order):
                 edge = float(np.interp(u, lcols, lb))   # 目の幅の外は端の列の値を使い、跳ねの形を保つ
                 d += [0.0, (tv - edge) + (vy - edge) * (0.55 - 1)]
         lash["forms"].append(np.round(d, 2).tolist())
+
+    # 手描きの閉じ目があれば、閉じる直前からそちらへ切り替える(笑い目^^は計算した弧のまま)
+    if drawn:
+        cl = add_part(f"閉じ目{k}", "頭", order + 5, cell=P(2))
+        ck = [{"param": open_id, "values": [0, 0.1, 0.25]}, {"param": smile_id, "values": [0, 1]}]
+        cl["opacity"] = {"keys": ck, "values": [1, 0.6, 0, 0, 0, 0]}
+        lash["opacity"] = {"keys": ck, "values": [0, 1, 1, 1, 1, 1]}
+        # 閉じきったときは白目・瞳も消す(閉じた目の形のわずかなすき間から、白目が点線のように見えないように)
+        wk = [{"param": open_id, "values": [0, 0.06]}, {"param": smile_id, "values": [0, 1]}]
+        for part in (white, ir):
+            part["opacity"] = {"keys": wk, "values": [0, 1, 1, 1]}
 
 eye_parts("R", 40)
 eye_parts("L", 45)

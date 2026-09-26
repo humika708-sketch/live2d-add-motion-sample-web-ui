@@ -41,7 +41,8 @@ window.renderParts = (params, ids) => {
 };
 
 const JOBS = {
-  "閉じ目": [{ ParamEyeLOpen: 0, ParamEyeROpen: 0 }, ["まつ毛L", "まつ毛R"]],
+  // 手描きの閉じ目(閉じ目L/R)があるモデルでは、閉じたときはそちらが見え、まつ毛は消える
+  "閉じ目": [{ ParamEyeLOpen: 0, ParamEyeROpen: 0 }, ["まつ毛L", "まつ毛R", "閉じ目L", "閉じ目R"]],
   "開き口": [{ ParamMouthOpenY: 1 }, ["口の中", "下唇", "口の線"]],
 };
 document.getElementById("save").onclick = () => {
