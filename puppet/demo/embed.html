@@ -17,7 +17,7 @@
 //   focus=bust     バストアップで表示(省略時は全身)
 //   mic=1          マイクの音量で口パク(初回に許可が必要)
 //   idle=0         待機モーションを流さない
-//   view=斜め右    最初の向き(正面 / 斜め左 / 斜め右。向き違いのモデルがあるときだけ)
+//   view=斜め右    最初の向き(横左 / 斜め左 / 正面 / 斜め右 / 横右。向き違いのモデルがあるときだけ)
 //   model=...      別のモデル(puppet.json)を1体だけ使う
 import { PuppetViews } from "../runtime/views.js";
 
@@ -26,9 +26,11 @@ const MODEL = q.get("model") || "../models/kurisu/puppet.json";
 const base = MODEL.replace(/[^/]*$/, "");
 // 向き違いのモデル(あるものだけ使う)。モーションと表情は正面のモデルのものを共通で使う
 const defs = [
+  { name: "横左", url: "../models/kurisu_横左/puppet.json", yaw: -2 },
   { name: "斜め左", url: "../models/kurisu_左/puppet.json", yaw: -1 },
   { name: "正面", url: MODEL, yaw: 0 },
   { name: "斜め右", url: "../models/kurisu_右/puppet.json", yaw: 1 },
+  { name: "横右", url: "../models/kurisu_横右/puppet.json", yaw: 2 },
 ];
 const available = [];
 for (const d of defs) {

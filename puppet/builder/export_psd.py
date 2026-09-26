@@ -39,7 +39,7 @@ def has(name):
 def merge(*names):
     """同じ役割の部品(左右の目など)を1枚に重ねる"""
     out = None
-    for n in names:
+    for n in [n for n in names if has(n)]:   # 真横の顔など、片目しか無いモデルもある
         im = Image.fromarray(load(n))
         out = im if out is None else Image.alpha_composite(out, im)
     return np.array(out)
@@ -75,7 +75,7 @@ def main():
         ("eyewear", load("眼鏡_黒")) if with_glasses and has("眼鏡_黒") else None,
         ("front hair", load("PSD_前髪")),
         # 眉は元の絵でも前髪の上に描かれているので、前髪より上に置く
-        ("eyebrow", merge("眉R", "眉L")) if has("眉R") and has("眉L") else None,
+        ("eyebrow", merge("眉R", "眉L")) if has("眉R") or has("眉L") else None,
     ]
     stack = [x for x in stack if x is not None]
     h, w = stack[0][1].shape[:2]

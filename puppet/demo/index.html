@@ -15,7 +15,7 @@
   #stage.checker { background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 24px 24px; }
   #stage canvas { touch-action: none; }
   #status { z-index: 5; }
-  .btns3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  .btns3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)); gap: 6px; }
   button.on { border-color: var(--accent); background: #4a3a44; }
   #status { position: absolute; left: 12px; bottom: 12px; background: #000a; padding: 4px 10px; border-radius: 6px; font-size: 12px; }
   #panel { width: 340px; background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 14px; }
@@ -88,9 +88,11 @@ const stage = document.getElementById("stage");
 
 // 向き違いのパペット。?model= で別のモデルを指定したときは、その1体だけにする
 const VIEW_DEFS = [
+  { name: "横左", url: "../models/kurisu_横左/puppet.json", yaw: -2 },
   { name: "斜め左", url: "../models/kurisu_左/puppet.json", yaw: -1 },
   { name: "正面", url: MODEL, yaw: 0 },
   { name: "斜め右", url: "../models/kurisu_右/puppet.json", yaw: 1 },
+  { name: "横右", url: "../models/kurisu_横右/puppet.json", yaw: 2 },
 ];
 const available = [];
 for (const d of VIEW_DEFS) {

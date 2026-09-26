@@ -246,6 +246,10 @@ BACK = HAIR & ~BANGS & ~FRONT
 # 顔 = 頭の範囲(あごの輪郭線ぶん少し下へ広げる)の中の、髪ではない部分(耳を含む)
 HEAD_POLY = HEAD_POLY | (np.roll(HEAD_POLY, int(3 * S), axis=0) & (YY > P(200)))
 FACE = OPAQUE & ~HAIR & HEAD_POLY
+if CFG.get("顔の縁"):
+    # 横顔では顔の輪郭(額・鼻・唇・あご)が背景に接している。その半透明の縁も顔に含める
+    # (体に残ると、首を振ったとき元の位置に輪郭の点線が残る)
+    FACE |= (ALPHA > 0.02) & ~HAIR & HEAD_POLY & ndimage.binary_dilation(FACE, iterations=int(2 * S))
 # 体 = 残り全部(首・白衣・脚など)
 BODY = (ALPHA > 0.02) & ~HAIR & ~FACE
 
@@ -320,7 +324,9 @@ def extract_eye_v2(key):
     return r
 
 
-EYES = {k: extract_eye_v2(k) for k in ("R", "L")}
+# 設定に書いた目だけを扱う(真横の顔は片目しか見えない)
+EYE_KEYS_CFG = [k for k in ("R", "L") if k in CFG["目"]]
+EYES = {k: extract_eye_v2(k) for k in EYE_KEYS_CFG}
 
 m = CFG["口"]
 mx0, my0, mx1, my1 = [int(round(v)) for v in P(m["消す範囲"])]
@@ -456,6 +462,7 @@ FACE_HULL = FACE_HULL.astype(bool)
 FACE_HULL |= np.roll(FACE_HULL, -int(12 * S), axis=0) & HEAD_POLY
 face_fill = (BANGS & FACE_HULL) | eye_erase | MOUTH_BOX
 face_fill &= HEAD_POLY
+face_fill &= ALPHA > 0.5          # 横顔では口の範囲が輪郭の外にはみ出すので、絵のある所だけにする
 rgb_face = diffuse_fill(RGB, skin_known, face_fill, iters=80)
 # 目のあった所は、各列で上下の肌の色を直線でつないで塗り直す(まぶたの陰の濃淡がそのまま続く)
 _eye_known = FACE & ~eye_erase & ~BANGS & (ALPHA > 0.9) & (VAL > 150)
@@ -530,7 +537,7 @@ if "閉じ目の差分" in CFG:
     _chair = (_chue >= hc["色相の下限"]) & (_chue <= hc["色相の上限"]) & (_chsv[..., 1] > hc["彩度の下限"]) & (_chsv[..., 2] > 100)
     _chair = remove_small(_chair, int(6 * S * S))
     _cexcl = ndimage.binary_dilation(_chair | BANGS, iterations=max(1, int(round(1.5 * S))))
-    for k in ("R", "L"):
+    for k in EYE_KEYS_CFG:
         x0, y0, x1, y1 = P(CFG["目"][k]["範囲"])
         reg = (XX >= x0 - P(4)) & (XX <= x1 + P(4)) & (YY >= y0) & (YY <= y1 + P(8))
         reg = reg & _cvalid & ~_cexcl & FACE
@@ -1124,8 +1131,9 @@ def eye_parts(k, order):
         for part in (white, ir):
             part["opacity"] = {"keys": wk, "values": [0, 1, 1, 1]}
 
-eye_parts("R", 40)
-eye_parts("L", 45)
+for _k, _order in (("R", 40), ("L", 45)):
+    if _k in EYES:
+        eye_parts(_k, _order)
 
 # 口
 MOUTH_KEYS = [{"param": "ParamMouthOpenY", "values": [0, 1]}, {"param": "ParamMouthForm", "values": [-1, 0, 1]}]
@@ -1232,6 +1240,8 @@ if not USE_MOUTH_IMAGES:
     add_drawn_mouth()
 
 for i, s in enumerate("RL"):
+    if f"頬{s}" not in LAYERS:
+        continue
     ch = add_part(f"頬{s}", "頭", 60 + i, cell=P(6))
     ch["opacity"] = {"keys": [{"param": "ParamCheek", "values": [0, 1]}], "values": [0, 1]}
 
