@@ -560,6 +560,81 @@ for i, c in enumerate(CFG["頬"]):
 
     painted(f"頬{'RL'[i]}", box, draw_cheek, blur=0.9)
 
+# --- 部品シートの素材(感情マーク・汗・涙・眼鏡・眉・頬)
+MAT = CFG.get("素材", {})
+MAT_DIR = os.path.join(BASE, MAT.get("フォルダ", ""))
+MAT_INFO = {}   # 名前 → (中心x, 中心y, 幅, 高さ)(実際の画素)
+
+
+def load_material(key, crop=None):
+    m = MAT.get(key)
+    if not m:
+        return None
+    path = os.path.join(MAT_DIR, m["ファイル"])
+    if not os.path.exists(path):
+        print(f"  素材が無いので飛ばす: {path}")
+        return None
+    im = Image.open(path).convert("RGBA")
+    if crop:
+        im = im.crop(tuple(crop))
+    # 高解像度化で残ったごく薄い透明度のノイズを消す(残すと素材のまわりに四角い影が出て、大きさの計算もずれる)
+    arr = np.array(im).astype(np.float32)
+    a = arr[..., 3] / 255
+    arr[..., 3] = np.clip((a - 0.08) / 0.92, 0, 1) * 255
+    im = Image.fromarray(arr.round().astype(np.uint8), "RGBA")
+    box = Image.fromarray((arr[..., 3] > 20).astype(np.uint8) * 255).getbbox()
+    return im.crop(box) if box else None
+
+
+def place_material(name, im, center, width, alpha_scale=1.0, yscale=1.0):
+    """素材を、元画像の座標で指定した中心・幅に置いた全体サイズの層にする(yscale: 縦の倍率)"""
+    w = P(width)
+    h = w * im.height / im.width * yscale
+    cx, cy = P(center)
+    x0, y0 = int(round(cx - w / 2)), int(round(cy - h / 2))
+    im2 = im.resize((max(1, int(round(w))), max(1, int(round(h)))), Image.LANCZOS)
+    arr = np.array(im2).astype(np.float32) / 255
+    full = np.zeros((H, W, 4), np.float32)
+    ys, xs = slice(max(y0, 0), min(y0 + arr.shape[0], H)), slice(max(x0, 0), min(x0 + arr.shape[1], W))
+    full[ys, xs] = arr[ys.start - y0:ys.stop - y0, xs.start - x0:xs.stop - x0]
+    full[..., 3] *= alpha_scale
+    LAYERS[name] = full
+    MAT_INFO[name] = (cx, cy, w, h)
+
+
+if MAT:
+    print("部品シートの素材を配置中")
+    # 頬: 描き起こしの頬を、素材の頬(左右に分かれた2つの塊)に置き換える
+    blush = load_material("頬")
+    if blush is not None:
+        # 左右の塊の境目は、真ん中付近で最も薄い列にする(真ん中で切ると、はみ出したぼかしが直線で切れる)
+        ba = np.array(blush)[..., 3].astype(np.float32).sum(axis=0)
+        q = blush.width // 4
+        half = q + int(np.argmin(ba[q:3 * q]))
+        for i, (part, c) in enumerate(zip((blush.crop((0, 0, half, blush.height)), blush.crop((half, 0, blush.width, blush.height))), CFG["頬"])):
+            # 切った側の縁を、なめらかに0へ落とす
+            pa = np.array(part).astype(np.float32)
+            n = pa.shape[1]
+            ramp = np.clip(np.arange(n) / (n * 0.18), 0, 1)
+            ramp = ramp[::-1] if i == 0 else ramp
+            pa[..., 3] *= ramp[None, :]
+            part = Image.fromarray(pa.round().astype(np.uint8), "RGBA")
+            part = part.crop(part.getbbox())
+            place_material(f"頬{'RL'[i]}", part, c, MAT["頬"]["幅"])
+    for key in ("眼鏡_黒", "眼鏡_赤", "怒りマーク", "汗"):
+        im = load_material(key)
+        if im is not None:
+            place_material(key, im, MAT[key]["中心"], MAT[key]["幅"], yscale=MAT[key].get("縦の倍率", 1.0))
+    tear = load_material("涙")
+    if tear is not None:
+        for i, pos in enumerate(MAT["涙"]["位置"]):
+            place_material(f"涙{'RL'[i]}", tear, pos, MAT["涙"]["幅"])
+    if "眉" in MAT:
+        for i, (cr, c) in enumerate(zip(MAT["眉"]["切り出し"], MAT["眉"]["中心"])):
+            im = load_material("眉", crop=cr)
+            if im is not None:
+                place_material(f"眉{'RL'[i]}", im, c, MAT["眉"]["幅"], alpha_scale=MAT["眉"].get("不透明度", 1.0))
+
 # 部品を元の位置のまま全体サイズでも保存する(PSD書き出し export_psd.py で使う)
 os.makedirs(os.path.join(OUT, "layers"), exist_ok=True)
 for name, arr in LAYERS.items():
@@ -1045,7 +1120,66 @@ for i, s in enumerate("RL"):
     ch = add_part(f"頬{s}", "頭", 60 + i, cell=P(6))
     ch["opacity"] = {"keys": [{"param": "ParamCheek", "values": [0, 1]}], "values": [0, 1]}
 
+# 涙: 目尻の下に出て、頬を伝って落ちる
+def transform_forms(part, keys, fn):
+    """keys の全組み合わせで、fn(組み合わせ, x, y) → (dx, dy) の変形を作る"""
+    part["keys"] = keys
+    part["forms"] = []
+    for c in combos(keys):
+        d = []
+        for (vx, vy) in part["verts"]:
+            dx, dy = fn(c, vx, vy)
+            d += [round(float(dx), 2), round(float(dy), 2)]
+        part["forms"].append(d)
+
+
+for i, sd in enumerate("RL"):
+    if f"涙{sd}" in LAYERS:
+        tp = add_part(f"涙{sd}", "頭", 62 + i, cell=P(3))
+        fall = P(MAT["涙"]["落ちる距離"])
+        tk = [{"param": "ParamTear", "values": [0, 0.3, 1]}]
+        tp["opacity"] = {"keys": tk, "values": [0, 1, 0.85]}
+        cx_, cy_, w_, h_ = MAT_INFO[f"涙{sd}"]
+        transform_forms(tp, tk, lambda c, vx, vy: (0.0, {0: -P(2), 0.3: 0.0, 1: fall}[c["ParamTear"]]
+                                                    + (vy - cy_) * {0: -0.4, 0.3: 0.0, 1: 0.25}[c["ParamTear"]]))
+
+# 眼鏡: 目の上、前髪の下に描く(前髪の毛先が眼鏡の上にかかる)
+for key, order in (("眼鏡_黒", 64), ("眼鏡_赤", 65)):
+    if key in LAYERS:
+        gp = add_part(key, "頭", order, cell=P(4))
+        gp["opacity"] = {"keys": [{"param": MAT[key]["パラメータ"], "values": [0, 1]}], "values": [0, 1]}
+
 add_part("前髪", "前髪の揺れ", 70, cell=P(6))
+
+# 眉: 前髪の上に半透明で描く(透け眉)。上下と傾きで表情を付ける
+for i, sd in enumerate("RL"):
+    if f"眉{sd}" in LAYERS:
+        bp = add_part(f"眉{sd}", "前髪の奥行き", 72 + i, cell=P(3))
+        cx_, cy_, w_, h_ = MAT_INFO[f"眉{sd}"]
+        sign = 1 if sd == "R" else -1          # 右眉(画面の左)は目頭側が右
+        bk = [{"param": "ParamBrowY", "values": [-1, 0, 1]}, {"param": "ParamBrowAngle", "values": [-1, 0, 1]}]
+
+        def brow_fn(c, vx, vy, cx_=cx_, cy_=cy_, sign=sign):
+            th = np.radians(12 * c["ParamBrowAngle"] * sign)    # 1: 怒り(目頭側が下がる)、-1: 困り(目頭側が上がる)
+            dx, dy = vx - cx_, vy - cy_
+            rx, ry = dx * np.cos(th) - dy * np.sin(th), dx * np.sin(th) + dy * np.cos(th)
+            return rx - dx, ry - dy - c["ParamBrowY"] * P(5)
+        transform_forms(bp, bk, brow_fn)
+        bp["opacity"] = {"keys": [{"param": "ParamBrowVisible", "values": [0, 1]}], "values": [0, 1]}
+
+# 感情マーク・汗: 頭の外側に描く
+if "怒りマーク" in LAYERS:
+    ap = add_part("怒りマーク", "頭", 80, cell=P(6))
+    cx_, cy_, w_, h_ = MAT_INFO["怒りマーク"]
+    ak = [{"param": "ParamAnger", "values": [0, 0.5, 1]}]
+    ap["opacity"] = {"keys": ak, "values": [0, 1, 1]}
+    transform_forms(ap, ak, lambda c, vx, vy: ((vx - cx_) * ({0: 0.6, 0.5: 0.92, 1: 1.12}[c["ParamAnger"]] - 1),
+                                               (vy - cy_) * ({0: 0.6, 0.5: 0.92, 1: 1.12}[c["ParamAnger"]] - 1)))
+if "汗" in LAYERS:
+    sp = add_part("汗", "頭", 81, cell=P(3))
+    sk = [{"param": "ParamSweat", "values": [0, 0.4, 1]}]
+    sp["opacity"] = {"keys": sk, "values": [0, 1, 1]}
+    transform_forms(sp, sk, lambda c, vx, vy: (0.0, {0: -P(3), 0.4: 0.0, 1: P(9)}[c["ParamSweat"]]))
 
 
 # ============================================================ 7. テクスチャにまとめて書き出す
@@ -1095,6 +1229,10 @@ PARAMS = [
     ("ParamEyeForm", "目の形(困り目↔怒り目)", -1, 1, 0), ("ParamEyeBallForm", "瞳の大きさ", -1, 1, 0),
     ("ParamMouthOpenY", "口の開き", 0, 1, 0), ("ParamMouthForm", "口の形(笑顔↔への字)", -1, 1, 0),
     ("ParamCheek", "頬の赤み", 0, 1, 0),
+    ("ParamBrowVisible", "眉を表示(透け眉)", 0, 1, 1), ("ParamBrowY", "眉の上下", -1, 1, 0),
+    ("ParamBrowAngle", "眉の傾き(困り↔怒り)", -1, 1, 0),
+    ("ParamAnger", "怒りマーク", 0, 1, 0), ("ParamSweat", "汗", 0, 1, 0), ("ParamTear", "涙", 0, 1, 0),
+    ("ParamGlasses", "眼鏡", 0, 1, 0),
     ("ParamBodyAngleX", "体の傾き 左右", -10, 10, 0), ("ParamBodyAngleZ", "体の回転", -10, 10, 0),
     ("ParamBreath", "呼吸", 0, 1, 0),
     ("ParamHairFront", "前髪の揺れ", -1, 1, 0), ("ParamHairSide", "前の房の揺れ", -1, 1, 0),

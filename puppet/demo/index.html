@@ -48,6 +48,10 @@
   <label class="chk"><input type="checkbox" id="autoBlink" checked> まばたき</label>
   <label class="chk"><input type="checkbox" id="autoBreath" checked> 呼吸</label>
   <label class="chk"><input type="checkbox" id="autoPhysics" checked> 髪揺れ(物理演算)</label>
+
+  <h2>小物</h2>
+  <label class="chk"><input type="checkbox" id="glasses"> 眼鏡をかける</label>
+  <label class="chk"><input type="checkbox" id="brows" checked> 眉を前髪から透かして見せる</label>
   <div class="btns" style="margin-top:6px"><button id="mic">マイクで口パク</button><button id="resetParams">値をリセット</button></div>
 
   <h2>表示</h2>
@@ -110,6 +114,20 @@ document.getElementById("resetParams").onclick = () => {
 // 自動の動き
 const bind = (id, key) => { const el = document.getElementById(id); el.onchange = () => { puppet.auto[key] = el.checked; if (key === "lookAt" && !el.checked) puppet.lookAt(0, 0); }; };
 bind("autoLook", "lookAt"); bind("autoBlink", "blink"); bind("autoBreath", "breath"); bind("autoPhysics", "physics");
+// 小物の切り替え(パラメータのスライダーとも連動させる)
+const toggle = (id, param) => {
+  const el = document.getElementById(id);
+  if (!puppet.paramInfo.has(param)) { el.closest("label").style.display = "none"; return; }
+  el.checked = puppet.getParam(param) > 0.5;
+  el.onchange = () => {
+    const v = el.checked ? 1 : 0;
+    puppet.setParam(param, v);
+    const sl = sliders.get(param);
+    if (sl) { sl.input.value = v; sl.out.textContent = v.toFixed(2); }
+  };
+};
+toggle("glasses", "ParamGlasses");
+toggle("brows", "ParamBrowVisible");
 document.getElementById("checker").onchange = (e) => document.getElementById("stage").classList.toggle("checker", e.target.checked);
 
 // モーション一覧(motions/index.json)

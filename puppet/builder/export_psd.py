@@ -10,7 +10,7 @@
 閉じ目・開き口は、自作エンジン(runtime/puppet.js)で描いた画像を使う
 (models/kurisu/layers/閉じ目.png・開き口.png。作り方は説明.md を参照)。
 
-使い方: python3 export_psd.py [出力先.psd] [切り抜き: 全身 または x0,y0,x1,y1(元画像基準の座標)]
+使い方: python3 export_psd.py [出力先.psd] [切り抜き: 全身 または x0,y0,x1,y1(元画像基準の座標)] [眼鏡]
 """
 import json
 import os
@@ -46,6 +46,7 @@ def merge(*names):
 def main():
     out_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, CFG["output"], "kurisu_parts.psd")
     crop = sys.argv[2] if len(sys.argv) > 2 else "全身"
+    with_glasses = len(sys.argv) > 3 and sys.argv[3] == "眼鏡"   # 眼鏡(eyewear)の層を入れた版
 
     # 白目は「目の形」の内側だけにする(白目の画像は動かしたとき用に少し外側まで塗ってあるため)
     white = merge("白目R", "白目L").astype(np.float32)
@@ -69,6 +70,7 @@ def main():
         ("mouth_close", load("口_閉じ") if has("口_閉じ") else load("口の線")),
         # 開き口は、口パクに向く「中開き」を優先する
         ("mouth_open", load("口_中開き") if has("口_中開き") else load("口_あ") if has("口_あ") else load("開き口")),
+        ("eyewear", load("眼鏡_黒")) if with_glasses and has("眼鏡_黒") else None,
         ("front hair", load("PSD_前髪")),
     ]
     stack = [x for x in stack if x is not None]

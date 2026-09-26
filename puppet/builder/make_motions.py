@@ -74,6 +74,9 @@ def define():
         curve("ParamMouthForm", [(0, 0), (0.4, -0.7), (3.3, -0.7), (3.8, 0), (D, 0)]),
         curve("ParamMouthOpenY", [(0, 0), (0.5, 0.15), (1.0, 0.35), (1.3, 0.05), (1.6, 0.25), (2.0, 0), (D, 0)]),
         curve("ParamEyeForm", [(0, 0), (0.5, -0.6), (3.3, -0.6), (3.8, 0), (D, 0)]),
+        curve("ParamSweat", [(0, 0), (0.6, 0), (1.4, 0.5), (3.3, 1), (D, 0)]),
+        curve("ParamBrowAngle", [(0, 0), (0.5, -0.7), (3.3, -0.7), (3.8, 0), (D, 0)]),
+        curve("ParamBrowY", [(0, 0), (0.5, 0.3), (3.3, 0.3), (3.8, 0), (D, 0)]),
     ])
 
     # ---------------------------------------------------------------- びっくり
@@ -87,6 +90,7 @@ def define():
         curve("ParamMouthOpenY", [(0, 0), (0.2, 0.75), (1.4, 0.7), (2.1, 0), (D, 0)]),
         curve("ParamMouthForm", [(0, 0), (0.2, -1), (1.4, -1), (2.1, 0), (D, 0)]),
         curve("ParamEyeBallForm", [(0, 0), (0.2, -1), (1.3, -1), (2.0, 0), (D, 0)]),
+        curve("ParamBrowY", [(0, 0), (0.15, 1), (1.4, 1), (2.1, 0), (D, 0)]),
     ])
 
     # ---------------------------------------------------------------- ウィンク
@@ -114,6 +118,8 @@ def define():
         curve("ParamEyeROpen", [(0, 1), (0.8, 0.75), (2.2, 0.75), (2.3, 0), (2.4, 0.75), (3.2, 0.75), (D, 1)]),
         curve("ParamMouthForm", [(0, 0), (0.8, -0.6), (3.2, -0.6), (D, 0)]),
         curve("ParamEyeForm", [(0, 0), (0.8, 0.35), (3.2, 0.35), (D, 0)]),
+        curve("ParamBrowAngle", [(0, 0), (0.8, 0.4), (3.2, 0.4), (D, 0)]),
+        curve("ParamBrowY", [(0, 0), (0.8, -0.3), (3.2, -0.3), (D, 0)]),
     ])
 
     # ---------------------------------------------------------------- やれやれ(首ふり)
@@ -126,6 +132,8 @@ def define():
         curve("ParamEyeROpen", [(0, 1), (0.3, 0.45), (1.8, 0.45), (2.3, 1), (D, 1)]),
         curve("ParamMouthForm", [(0, 0), (0.3, -0.8), (1.8, -0.8), (2.3, 0), (D, 0)]),
         curve("ParamEyeForm", [(0, 0), (0.3, 0.45), (1.8, 0.45), (2.3, 0), (D, 0)]),
+        curve("ParamSweat", [(0, 0), (0.3, 0.5), (1.8, 1), (2.4, 0), (D, 0)]),
+        curve("ParamBrowAngle", [(0, 0), (0.3, -0.5), (1.8, -0.5), (2.3, 0), (D, 0)]),
     ])
 
     # ---------------------------------------------------------------- 話す(口パクの見本)
@@ -156,6 +164,9 @@ def define():
         curve("ParamAngleX", [(0, 0), (1.3, 0), (1.7, 16), (2.6, 16), (3.0, 0), (D, 0)]),
         curve("ParamEyeBallX", [(0, 0), (1.3, 0), (1.6, 0.8), (2.6, 0.8), (3.0, 0), (D, 0)]),
         curve("ParamBodyAngleX", [(0, 0), (0.3, -3), (1.3, -3), (1.7, 3), (2.6, 3), (3.0, 0), (D, 0)]),
+        curve("ParamAnger", [(0, 0), (0.2, 1), (0.45, 0.7), (0.7, 1), (0.95, 0.7), (1.2, 1), (1.6, 0.75), (2.0, 1), (2.6, 0.8), (3.0, 0), (D, 0)]),
+        curve("ParamBrowAngle", [(0, 0), (0.2, 1), (2.6, 1), (3.0, 0), (D, 0)]),
+        curve("ParamBrowY", [(0, 0), (0.2, -0.6), (2.6, -0.6), (3.0, 0), (D, 0)]),
     ])
 
     # ---------------------------------------------------------------- 悲しむ
@@ -170,6 +181,40 @@ def define():
         curve("ParamAngleY", [(0, 0), (0.8, -16), (3.8, -14), (4.4, 0), (D, 0)]),
         curve("ParamAngleZ", [(0, 0), (0.9, 7), (3.8, 7), (4.4, 0), (D, 0)]),
         curve("ParamBodyAngleZ", [(0, 0), (1.0, 3), (3.8, 3), (4.4, 0), (D, 0)]),
+        curve("ParamBrowAngle", [(0, 0), (0.6, -1), (3.8, -1), (4.3, 0), (D, 0)]),
+        curve("ParamBrowY", [(0, 0), (0.6, 0.3), (3.8, 0.3), (4.3, 0), (D, 0)]),
+    ])
+
+    # ---------------------------------------------------------------- 泣く
+    D = 5.0
+    M["cry"] = motion(D, [
+        curve("ParamTear", [(0, 0), (0.8, 0), (1.2, 0.3), (2.4, 1), (2.45, 0), (2.9, 0.3), (4.2, 1), (4.6, 0), (D, 0)]),
+        curve("ParamEyeForm", [(0, 0), (0.6, -1), (4.4, -1), (4.9, 0), (D, 0)]),
+        curve("ParamBrowAngle", [(0, 0), (0.6, -1), (4.4, -1), (4.9, 0), (D, 0)]),
+        curve("ParamBrowY", [(0, 0), (0.6, 0.4), (4.4, 0.4), (4.9, 0), (D, 0)]),
+        curve("ParamEyeLOpen", [(0, 1), (0.6, 0.6), (2.6, 0.6), (2.75, 0), (2.9, 0.6), (4.4, 0.6), (4.9, 1), (D, 1)]),
+        curve("ParamEyeROpen", [(0, 1), (0.6, 0.6), (2.6, 0.6), (2.75, 0), (2.9, 0.6), (4.4, 0.6), (4.9, 1), (D, 1)]),
+        curve("ParamEyeBallY", [(0, 0), (0.6, -0.5), (4.4, -0.5), (4.9, 0), (D, 0)]),
+        curve("ParamMouthForm", [(0, 0), (0.6, -1), (4.4, -1), (4.9, 0), (D, 0)]),
+        curve("ParamMouthOpenY", [(0, 0), (1.0, 0), (1.3, 0.25), (1.6, 0.05), (2.0, 0.3), (2.3, 0), (D, 0)]),
+        curve("ParamAngleY", [(0, 0), (0.8, -14), (4.4, -12), (4.9, 0), (D, 0)]),
+        curve("ParamAngleZ", [(0, 0), (1.0, 5), (4.4, 5), (4.9, 0), (D, 0)]),
+        curve("ParamCheek", [(0, 0), (1.0, 0.5), (4.4, 0.5), (4.9, 0), (D, 0)]),
+    ])
+
+    # ---------------------------------------------------------------- あわてる
+    D = 3.0
+    M["panic"] = motion(D, [
+        curve("ParamSweat", [(0, 0), (0.2, 0.5), (2.4, 1), (2.8, 0), (D, 0)]),
+        curve("ParamBrowAngle", [(0, 0), (0.2, -1), (2.4, -1), (2.8, 0), (D, 0)]),
+        curve("ParamBrowY", [(0, 0), (0.2, 0.8), (2.4, 0.8), (2.8, 0), (D, 0)]),
+        curve("ParamEyeForm", [(0, 0), (0.2, -0.6), (2.4, -0.6), (2.8, 0), (D, 0)]),
+        curve("ParamEyeBallForm", [(0, 0), (0.2, -1), (2.4, -1), (2.8, 0), (D, 0)]),
+        curve("ParamEyeBallX", [(0, 0), (0.3, 0.8), (0.6, -0.8), (0.9, 0.8), (1.2, -0.8), (1.6, 0), (D, 0)]),
+        curve("ParamMouthOpenY", [(0, 0), (0.2, 0.4), (0.5, 0.15), (0.8, 0.45), (1.1, 0.1), (1.4, 0.35), (1.8, 0), (D, 0)]),
+        curve("ParamMouthForm", [(0, 0), (0.2, -0.8), (2.4, -0.8), (2.8, 0), (D, 0)]),
+        curve("ParamAngleX", [(0, 0), (0.3, 8), (0.6, -8), (0.9, 7), (1.2, -6), (1.6, 0), (D, 0)]),
+        curve("ParamCheek", [(0, 0), (0.3, 0.6), (2.4, 0.6), (2.8, 0), (D, 0)]),
     ])
 
     # ---------------------------------------------------------------- 笑う
@@ -208,6 +253,7 @@ def define():
         ("thinking", "考え中", 0.5, 0.5, False), ("sigh", "やれやれ", 0.3, 0.5, False),
         ("talk", "話す", 0.2, 0.3, False),
         ("laugh", "笑う", 0.2, 0.4, False), ("angry", "怒る", 0.2, 0.4, False), ("sad", "悲しむ", 0.5, 0.6, False),
+        ("cry", "泣く", 0.4, 0.6, False), ("panic", "あわてる", 0.2, 0.5, False),
         ("idle_look", "待機(見回す)", 1.0, 1.0, True), ("idle_breath", "待機(ゆらぐ)", 1.0, 1.0, True),
     ]
     return M, MANIFEST
@@ -219,11 +265,11 @@ EXPRESSIONS = [
     {"name": "通常", "params": {}},
     {"name": "微笑", "params": {"ParamMouthForm": 1, "ParamEyeLSmile": 0.35, "ParamEyeRSmile": 0.35, "ParamCheek": 0.25}},
     {"name": "閉じ目", "params": {"ParamEyeLOpen": 0, "ParamEyeROpen": 0}},
-    {"name": "驚き", "params": {"ParamEyeBallForm": -1, "ParamMouthForm": -1, "ParamMouthOpenY": 0.4}},
-    {"name": "怒り", "params": {"ParamEyeForm": 1, "ParamEyeLOpen": 0.85, "ParamEyeROpen": 0.85, "ParamMouthForm": -1}},
-    {"name": "悲しみ", "params": {"ParamEyeForm": -1, "ParamEyeLOpen": 0.75, "ParamEyeROpen": 0.75, "ParamMouthForm": -1, "ParamEyeBallY": -0.4}},
-    {"name": "照れ", "params": {"ParamEyeForm": -0.6, "ParamCheek": 1, "ParamMouthForm": 0.3, "ParamEyeBallX": 0.5, "ParamEyeBallY": -0.3}},
-    {"name": "ジト目", "params": {"ParamEyeLOpen": 0.55, "ParamEyeROpen": 0.55, "ParamEyeForm": 0.4, "ParamMouthForm": -0.6}},
+    {"name": "驚き", "params": {"ParamBrowY": 1, "ParamEyeBallForm": -1, "ParamMouthForm": -1, "ParamMouthOpenY": 0.4}},
+    {"name": "怒り", "params": {"ParamAnger": 0.9, "ParamBrowAngle": 1, "ParamBrowY": -0.6, "ParamEyeForm": 1, "ParamEyeLOpen": 0.85, "ParamEyeROpen": 0.85, "ParamMouthForm": -1}},
+    {"name": "悲しみ", "params": {"ParamBrowAngle": -1, "ParamBrowY": 0.3, "ParamTear": 0.5, "ParamEyeForm": -1, "ParamEyeLOpen": 0.75, "ParamEyeROpen": 0.75, "ParamMouthForm": -1, "ParamEyeBallY": -0.4}},
+    {"name": "照れ", "params": {"ParamBrowAngle": -0.6, "ParamSweat": 0.5, "ParamEyeForm": -0.6, "ParamCheek": 1, "ParamMouthForm": 0.3, "ParamEyeBallX": 0.5, "ParamEyeBallY": -0.3}},
+    {"name": "ジト目", "params": {"ParamBrowAngle": 0.4, "ParamBrowY": -0.4, "ParamEyeLOpen": 0.55, "ParamEyeROpen": 0.55, "ParamEyeForm": 0.4, "ParamMouthForm": -0.6}},
 ]
 
 
