@@ -56,12 +56,14 @@ def main():
     # 下から上への重ね順(PSDでは下のレイヤーほど奥)
     stack = [
         ("back hair", load("PSD_後髪")),
-        ("topwear", load("体")),
+        ("topwear", load("PSD_体") if has("PSD_体") else load("体")),
+        ("neck", load("PSD_首")) if has("PSD_首") else None,
         ("side hair", load("PSD_前の房")),
         ("face", load("顔")),
         ("eyewhite", white),
         ("irides", merge("瞳R", "瞳L")),
-        ("eyelash", merge("まつ毛R", "まつ毛L")),
+        # 下まぶたの線も、まつ毛と一緒に(目を閉じると消える層に)入れる
+        ("eyelash", merge(*[n for n in ("まつ毛R", "まつ毛L", "下まぶたR", "下まぶたL") if has(n)])),
         ("eye_close", load("閉じ目")),
         # 口の差分画像から作った口があればそれを使う。無ければ描き起こしの口
         ("mouth_close", load("口_閉じ") if has("口_閉じ") else load("口の線")),
@@ -69,6 +71,7 @@ def main():
         ("mouth_open", load("口_中開き") if has("口_中開き") else load("口_あ") if has("口_あ") else load("開き口")),
         ("front hair", load("PSD_前髪")),
     ]
+    stack = [x for x in stack if x is not None]
     h, w = stack[0][1].shape[:2]
     if crop != "全身":
         s = w / CFG["baseWidth"]

@@ -23,6 +23,7 @@ from scipy import ndimage
 
 from inpaint_lama import inpaint as lama_inpaint
 import mouth_from_images
+import eye_parts as eyelib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -259,7 +260,19 @@ def extract_eye(key):
                 iris_ell=iris_ell)
 
 
-EYES = {k: extract_eye(k) for k in ("R", "L")}
+def extract_eye_v2(key):
+    """目を、開いている部分(白目+瞳)と上まつ毛に分ける(eye_parts.py)"""
+    e = CFG["目"][key]
+    box = [int(round(v)) for v in P(e["範囲"])]
+    bright_hair = hair_color & (VAL > 150)
+    r = eyelib.extract(RGB, ALPHA, np.dstack([hsv[..., 0], SAT, VAL]), box, P(e["瞳の中心"]), P(e["瞳の半径"]), S,
+                       BANGS | bright_hair)
+    r["lash"] = r["upper"]
+    r["iris"] = r["opening"] & r["iris_ell"]
+    return r
+
+
+EYES = {k: extract_eye_v2(k) for k in ("R", "L")}
 
 m = CFG["口"]
 mx0, my0, mx1, my1 = [int(round(v)) for v in P(m["消す範囲"])]
@@ -298,6 +311,9 @@ rgb_back = np.where(_behind_head[..., None], _v, _hair_ctx)
 # 白衣の下の髪: こちらは LaMa で毛の質感を描き足す
 print("後ろ髪の隠れた部分を描き足し中(LaMa)")
 rgb_back = lama_inpaint(rgb_back, under_back & ~_behind_head)
+# 胸の前の房の下は、房そのものの絵を後ろ髪にも入れておく(房が揺れたとき、下から同じ髪の質感が見えるように。
+# 塗り足しだと暗い色になり、房の横に黒っぽいくさびが見えてしまう)
+rgb_back = np.where(FRONT[..., None], RGB, rgb_back)
 a_back = np.where(BACK, ALPHA * np.clip(soft(BACK, 0.5) * 1.5, 0, 1), 0)
 a_back = np.maximum(a_back, under_back.astype(np.float32))
 layer("後ろ髪", decontaminate(rgb_back, a_back), a_back)
@@ -305,6 +321,7 @@ layer("後ろ髪", decontaminate(rgb_back, a_back), a_back)
 # --- 体: 前の房の下を塗り足し、首をあごの下へ延ばす
 _lock_all = ndimage.binary_dilation(FRONT, iterations=int(6 * S)) & (ALPHA > 0.5)   # 房全体(毛先の薄い部分も含める)
 under_body = _lock_all & inside_body & (YY >= y_start - P(10))
+_collar_psd = P(CFG.get("首", {}).get("襟の高さ", 272)) + P(6)
 # 首の延長: 各列で、あごのすぐ下の首を「あごの線で折り返して」上へ映す。
 # 境目で色がそのままつながり、あごの影の濃淡も続くので、頭が動いて首が見えても継ぎ目が出ない。
 # 首の幅は、あごの下に肌がある列だけを使うことで自動的に決まる(髪のある列には伸ばさない)
@@ -351,6 +368,18 @@ a_body = np.where(BODY, ALPHA, 0) * np.clip(1.0 - soft(HAIR & ~BODY, 0.4), 0, 1)
 neck_soft = np.clip(cv2.GaussianBlur(neck.astype(np.float32), (0, 0), 2.5 * S) * 1.5 - 0.15, 0, 1) * neck
 a_body = np.maximum(a_body, np.maximum(under_body.astype(np.float32), neck_soft))
 layer("体", rgb_body, a_body)
+# パーツ分けPSD用の「首」: あごの下から襟までの肌と、あごの下に隠れる首の延長(他の道具で首を頭に追従させるため)
+_neck_zone = (np.abs(XX - P(head["首の回転軸"][0])) < P(60)) & (YY < _collar_psd) & (YY > P(head["中心"][1]))
+_neck_skin = (BODY | neck) & skin_like_body & _neck_zone
+_neck_skin = ndimage.binary_closing(_neck_skin, iterations=int(2 * S))
+_lab_n, _n_n = ndimage.label(_neck_skin)
+if _n_n > 1:
+    _neck_skin = _lab_n == (np.argmax(ndimage.sum(_neck_skin, _lab_n, range(1, _n_n + 1))) + 1)
+_a_neck = np.clip(soft(_neck_skin, 0.6) * 1.4, 0, 1) * np.maximum(np.where(neck, 0, a_body), neck_soft)
+layer("PSD_首", decontaminate(rgb_body, _a_neck), _a_neck)
+# パーツ分けPSD用の「体」: 首の延長(あごの下に隠れる部分)は首の層だけに入れる。
+# 体に残すと、顔が動いたとき体に残った首の延長が四角く見えてしまう
+layer("PSD_体", rgb_body, a_body * (1 - neck.astype(np.float32)))
 
 # --- 前の房
 a_front = np.where(ndimage.binary_dilation(FRONT, iterations=1), ALPHA * np.clip(soft(FRONT, 0.5) * 1.6, 0, 1), 0)
@@ -359,9 +388,12 @@ layer("前の房", decontaminate(RGB, a_front), a_front)
 # --- 顔: 前髪の下の肌、目と口を消した肌を塗り足す
 eye_erase = np.zeros((H, W), bool)
 for e in EYES.values():
-    eye_erase |= ndimage.binary_dilation(e["opening"] | e["lash"], iterations=int(2 * S))
+    e["erase"] = eyelib.erase_region(e, S, H, W) & ~BANGS
+    eye_erase |= e["erase"]
 skin_like = (VAL > 190) & ((RGB[..., 0] - RGB[..., 2]) * 255 > 12)
-skin_known = FACE & skin_like & ~eye_erase & ~MOUTH_BOX & (ALPHA > 0.9)
+# 色の手本は、目のまわりの暗い線だけを除いた肌(まぶたの陰の色は残して、塗り足しが周りの陰となじむようにする)
+_near_eye_dark = ndimage.binary_dilation(eye_erase, iterations=int(4 * S)) & (VAL < 175)
+skin_known = FACE & skin_like & ~eye_erase & ~MOUTH_BOX & ~_near_eye_dark & (ALPHA > 0.9)
 _skin = FACE & skin_like
 _lab, _n = ndimage.label(_skin)
 if _n > 1:  # いちばん大きい肌の塊(顔)だけ。耳は除く
@@ -377,6 +409,11 @@ FACE_HULL |= np.roll(FACE_HULL, -int(12 * S), axis=0) & HEAD_POLY
 face_fill = (BANGS & FACE_HULL) | eye_erase | MOUTH_BOX
 face_fill &= HEAD_POLY
 rgb_face = diffuse_fill(RGB, skin_known, face_fill, iters=80)
+# 目のあった所は、各列で上下の肌の色を直線でつないで塗り直す(まぶたの陰の濃淡がそのまま続く)
+_eye_known = FACE & ~eye_erase & ~BANGS & (ALPHA > 0.9) & (VAL > 150)
+_vfill, _vdone = eyelib.fill_vertical(RGB, eye_erase, _eye_known, S)
+rgb_face = np.where((_vdone & eye_erase)[..., None], _vfill, rgb_face)
+EYE_BASE = rgb_face.copy()   # まつ毛・下まぶたの線を「差」で取り出すときの下地
 a_face = np.where(FACE, ALPHA, 0) * np.clip(1.0 - soft(HAIR & ~BANGS, 0.4), 0, 1)
 # 顔の下端(あごの輪郭線の少し下で多角形に切った所)は、ぼかして階段状のギザギザを消す
 a_face *= np.clip(soft(HEAD_POLY, 0.9) * 1.25, 0, 1)
@@ -386,38 +423,46 @@ layer("顔", rgb_face, a_face)
 # --- 目の部品
 for k, e in EYES.items():
     op = e["opening"]
-    # 白目: 開いている部分から瞳を消して白で塗り、少し外側まで延ばす
-    # 白目の色は「明るく色の薄い画素」だけから、行ごとの中央値で取る(上まぶたの影の濃淡を残すため)。
-    # 瞳のあった所もこの色で塗るので、瞳を小さくしたときに元の瞳の跡が出ない
+    # 白目: 開いている部分を、白目の画素だけから取った「行ごとの色」で塗る(上まぶたの影の濃淡を残す)。
+    # 瞳のあった所もこの色で塗るので、瞳を動かしたり小さくしたりしても元の瞳の跡が出ない
     grow = ndimage.binary_dilation(op, iterations=int(2 * S))
-    # この子の瞳は薄い藤色なので、彩度のしきい値を低くして瞳の明るい部分を白目と取り違えないようにする
-    sclera = op & (VAL > 200) & (SAT < 28) & ~ndimage.binary_dilation(e["iris_ell"], iterations=int(3 * S))
-    ys_g = np.where(grow.any(axis=1))[0]
-    row_col = {}
-    for y in ys_g:
-        px = RGB[y][sclera[y]]
-        if len(px) >= 2:
-            row_col[y] = np.median(px, axis=0)
-    known_rows = sorted(row_col)
-    rgb_w = RGB.copy()
-    if known_rows:
-        for y in ys_g:
-            near = min(known_rows, key=lambda r: abs(r - y))
-            c = row_col[near]
-            fill_row = grow[y] & ~sclera[y]
-            rgb_w[y][fill_row] = c
-        # 行ごとの塗りの境目をならす
-        blur = cv2.GaussianBlur(rgb_w, (0, 0), 0.8 * S)
-        rgb_w = np.where((grow & ~sclera)[..., None], blur, rgb_w)
+    sclera = op & (SAT < 30) & (VAL > 150) & ~ndimage.binary_dilation(e["iris_ell"], iterations=int(1 * S))
+    # 白目の色は、白目の画素から面として塗り広げる(明るい所と、上まぶたの陰の濃淡をそのまま残す)
+    rgb_w = diffuse_fill(RGB, sclera, grow & ~sclera)
     layer(f"白目{k}", rgb_w, grow.astype(np.float32))
     # 瞳: 楕円全体まで延ばす(まぶたの下に隠れていた部分も描いておく)
-    iris_full = e["iris_ell"]
-    rgb_i = diffuse_fill(RGB, e["iris"], iris_full & ~e["iris"], iters=30)
-    a_i = np.clip(soft(iris_full, 0.5) * 1.3, 0, 1)
+    icx_, icy_ = P(CFG["目"][k]["瞳の中心"])
+    irx_, iry_ = P(CFG["目"][k]["瞳の半径"])
+    big_ell = ((XX - icx_) / (irx_ * 1.2)) ** 2 + ((YY - icy_) / (iry_ * 1.2)) ** 2 <= 1
+    pale_px = (SAT < 30) & (VAL > 150)
+    # 瞳の範囲 = 暗い縁取りの輪の内側(白目の画素を含めない。視線を動かしたとき白目がついて来ないように)
+    iris_reg = ndimage.binary_fill_holes(e["opening"] & big_ell & ~pale_px)
+    lab_, n_ = ndimage.label(iris_reg)
+    if n_ > 1:
+        iris_reg = lab_ == lab_[int(icy_), int(icx_)] if lab_[int(icy_), int(icx_)] else lab_ == (np.argmax(ndimage.sum(iris_reg, lab_, range(1, n_ + 1))) + 1)
+    # まぶたの下に隠れていた部分(開いている部分の外)も、瞳の色で塗り足しておく(上下を見たとき用)
+    hidden = e["iris_ell"] & ~e["opening"]
+    iris_full = iris_reg | hidden
+    rgb_i = diffuse_fill(RGB, iris_reg, iris_full & ~iris_reg, iters=30)
+    a_i = np.clip(soft(iris_full, 0.35) * 1.4, 0, 1)
     layer(f"瞳{k}", rgb_i, a_i)
-    # まつ毛
-    a_l = np.clip(soft(e["lash"], 0.45) * 1.5, 0, 1) * ALPHA
-    layer(f"まつ毛{k}", RGB, a_l)
+    # 上まつ毛: 不透明度は暗さから、色は背景の明るさを差し引いて逆算する(縁がなめらかになる)
+    # 上まつ毛・下まぶたの線は、元の絵と「目を消して塗り直した肌」の差で作る
+    # (肌の上に重ねると元の絵どおりに見え、縁もなめらかになる)
+    mid_full = np.interp(np.arange(W), e["cols"], ((e["top"] + e["bot"]) / 2)[e["cols"]])
+    upper_side = YY <= mid_full[None, :]
+    # 開いている部分の上の縁(2S)も、まつ毛の影としてまつ毛に含める(まつ毛と白目の間に白い筋が出ないように)
+    top_full = np.interp(np.arange(W), e["cols"], e["top"][e["cols"]])
+    # ただし青みのある画素(瞳の上の影・瞳孔の先)は除く(閉じたとき、まつ毛の下に青い影が残るため)
+    not_blue = (RGB[..., 2] - RGB[..., 0]) < 0.02
+    top_edge = e["opening"] & (YY <= top_full[None, :] + 2 * S) & not_blue & ~e["iris_ell"]
+    lash_region = e["erase"] & (~e["opening"] | top_edge) & (upper_side | ndimage.binary_dilation(e["lash"], iterations=int(S)))
+    col_l, a_l = eyelib.diff_layer(RGB, EYE_BASE, lash_region, strength=0.30, darker_only=True)
+    layer(f"まつ毛{k}", col_l, a_l * ALPHA)
+    e["lash"] = a_l > 0.2
+    lower_region = e["erase"] & ~e["opening"] & ~lash_region
+    col_d, a_d = eyelib.diff_layer(RGB, EYE_BASE, lower_region, strength=0.18, darker_only=True)
+    layer(f"下まぶた{k}", col_d, a_d * ALPHA)
     # 目の形(切り抜き用。見た目には描かない)
     layer(f"目の形{k}", np.ones((H, W, 3), np.float32), op.astype(np.float32))
 
@@ -689,6 +734,22 @@ warp("体", None, [0, 0, W, H], 8, 16,
 DEFORMERS.append(dict(id="首", type="rotation", parent="体", origin=[PX, PY], keys=[KEY_AZ],
                       forms=[{"angle": -v / 30 * ROLL_MAX} for v in KEY_AZ["values"]]))
 
+# 首: あごのところでは頭と一緒に動き、襟に向かって動きが0になる(首を振ったとき、首が顔についていく)。
+# あごより上(顔に隠れている首の延長)は頭と完全に一緒に動くので、首を振っても見えてこない
+_jaw_arr = np.array(jaw)
+_collar = P(CFG.get("首", {}).get("襟の高さ", 272))
+
+
+def neck_disp(c, xs, ys):
+    jy = np.interp(xs, _jaw_arr[:, 0], _jaw_arr[:, 1])
+    dx, dy = head_total_disp(c["ParamAngleX"], c["ParamAngleY"], c["ParamAngleZ"], xs, np.minimum(ys, jy))
+    wy = 1 - smoothstep(jy, _collar, ys)
+    wx = 1 - smoothstep(P(44), P(60), np.abs(xs - PX))
+    return dx * wy * wx, dy * wy * wx
+
+
+warp("首の追従", "体", [PX - P(62), P(185), P(124), P(115)], 16, 16, [KEY_AX, KEY_AY, KEY_AZ], neck_disp)
+
 # 頭の向き(左右・上下)
 hx0, hy0, hx1, hy1 = P(head["変形の範囲"])
 warp("頭", "首", [hx0, hy0, hx1 - hx0, hy1 - hy0], 10, 10, [KEY_AX, KEY_AY],
@@ -715,8 +776,9 @@ warp("前髪の揺れ", "前髪の奥行き", [bx0, by0, bx1 - bx0, by1 - by0], 
 # 長い髪: 上のほうは頭に付いていき、下へいくほど物理演算の揺れが効く。
 # 頭への追従は、後ろ髪と前の房で「同じ1つの変形器」を使う(別々だと格子の違いで境目がずれる)
 bk = CFG["後ろ髪"]
-FOLLOW_START = P(bk["根元の高さ"]) - P(30)   # ここより上は頭と一緒に動く
-FOLLOW_END = P(bk["根元の高さ"]) + P(150)    # ここより下は頭に付いていかない
+# あごの高さより上の髪は、顔とまったく同じに動かす(顔の縁が髪の上をすべって、ぎざぎざに見えないように)
+FOLLOW_START = P(head["首の回転軸"][1]) - P(12)   # ここより上は頭と一緒に動く
+FOLLOW_END = FOLLOW_START + P(95)                 # ここより下は頭に付いていかない(肩の上の髪が肩から浮かないように短めにする)
 _b1, _b2 = crop_bbox(LAYERS["後ろ髪"], pad=int(6 * S)), crop_bbox(LAYERS["前の房"], pad=int(6 * S))
 fx0, fy0 = min(_b1[0], _b2[0]), min(_b1[1], _b2[1])
 fx1 = max(_b1[2], _b2[2])
@@ -724,8 +786,15 @@ fy1 = max(_b1[3], _b2[3])
 _cols = max(8, int((fx1 - fx0) / P(24)))
 _rows = max(8, int((fy1 - fy0) / P(30)))
 
+_head_half = (P(head["あごの線"][-1][0]) - P(head["あごの線"][0][0])) / 2
+
+
 def follow(c, xs, ys):
     wgt = 1 - smoothstep(FOLLOW_START, FOLLOW_END, ys)
+    # あごより下で、頭の幅より外(肩にかかる髪)は、頭の動きにほとんど付いていかない
+    # (頭を傾けたとき肩の髪が上下にずれて、白衣の縁に影の帯が見えないように)
+    side = smoothstep(_head_half - P(8), _head_half + P(40), np.abs(xs - PX)) * smoothstep(FOLLOW_START - P(10), FOLLOW_START + P(25), ys)
+    wgt = wgt * (1 - 0.85 * side)
     dx, dy = head_total_disp(c["ParamAngleX"], c["ParamAngleY"], c["ParamAngleZ"], xs, ys)
     return dx * wgt, dy * wgt
 
@@ -750,7 +819,7 @@ front_parent = hair_sway("前の房", "ParamHairSide", P(fr["根元の高さ"]),
 # ============================================================ 6. 部品の登録とキーフォーム
 
 add_part("後ろ髪", back_parent, 0, cell=P(14))
-add_part("体", "体", 10, cell=P(20))
+add_part("体", "首の追従", 10, cell=P(10))
 add_part("前の房", front_parent, 20, cell=P(10))
 face_part = add_part("顔", "頭", 30, cell=P(8))
 if USE_MOUTH_IMAGES:
@@ -770,28 +839,30 @@ if USE_MOUTH_IMAGES:
 EYE_KEYS = [{"param": None, "values": [0, 1]}, {"param": None, "values": [0, 1]}]
 
 def eye_parts(k, order):
+    """目の部品(目の形・白目・瞳・上まつ毛)と、その動き。
+    まぶたは「上の縁の線」として扱い、まつ毛は列ごとにその線に沿って動かす(形がくずれない)"""
     e = EYES[k]
     open_id = f"ParamEye{k}Open"
     smile_id = f"ParamEye{k}Smile"
     keys = [{"param": open_id, "values": [0, 1]}, {"param": smile_id, "values": [0, 1]},
             {"param": "ParamEyeForm", "values": [-1, 0, 1]}]
-    cols = sorted(e["cols"])
-    n = 17
-    xs = np.linspace(cols[0] - 0.5, cols[-1] + 0.5, n)
-    def edge(d, x):
-        near = min(d.keys(), key=lambda c: abs(c - x))
-        return float(d[near])
-    top = np.array([edge(e["top"], x) - 0.5 for x in xs])
-    bot = np.array([edge(e["bot"], x) + 0.5 for x in xs])
+    cols = e["cols"]
+    (xa, ya), (xb, yb) = e["corners"]
+    n = 21
+    xs = np.linspace(xa - 0.5, xb + 0.5, n)
+    top = np.interp(xs, cols, e["top"][cols]) - 0.5
+    bot = np.interp(xs, cols, e["bot"][cols]) + 0.5
     # 列ごとのばらつきをならす(閉じたときの線がガタつかないように)
     k_ = np.array([1, 2, 3, 2, 1], float); k_ /= k_.sum()
     top = np.convolve(np.pad(top, 2, mode="edge"), k_, mode="valid")
     bot = np.convolve(np.pad(bot, 2, mode="edge"), k_, mode="valid")
     hgt = bot - top
+    hc = float(hgt.max())
     tt = np.linspace(0, 1, n)
-    bump = np.sin(np.pi * tt)          # 中央ほど大きい
-    arc_y = bot - hgt * 0.35 - hgt * 0.45 * bump   # 笑い目(^^)の弧
-
+    bump = np.sin(np.pi * tt)                              # 中央ほど大きい
+    corner_line = ya + (yb - ya) * (xs - xa) / max(xb - xa, 1)
+    closed_line = corner_line + 0.16 * hc * bump           # 閉じた目: 目頭と目尻を結ぶ線から、ゆるく下へ弧を描く
+    smile_line = corner_line + 0.06 * hc - 0.30 * hc * bump  # 笑い目(^^): 上へ弧を描く
     # 目頭側ほど1(右目=画面の左の目は右側が目頭、左目は左側が目頭)
     t_inner = tt if k == "R" else 1 - tt
 
@@ -800,9 +871,8 @@ def eye_parts(k, order):
         # 怒り目は目頭側の上まぶたを、困り目は目尻側の上まぶたを下げる(参照シートの表情参考より)
         lid = np.where(fm > 0, fm * hgt * 0.40 * t_inner ** 1.4, -fm * hgt * 0.30 * (1 - t_inner) ** 1.4) + abs(fm) * hgt * 0.04
         t_open = np.minimum(top + lid, bot - hgt * 0.25)
-        b_open = bot - sm * hgt * 0.28 * bump            # 笑うと下まぶたが上がる
-        close_line = bot - hgt * 0.30 + hgt * 0.08 * bump   # 閉じた目はゆるく下に弧を描く
-        t_closed = close_line * (1 - sm) + arc_y * sm
+        b_open = bot - sm * hgt * 0.28 * bump              # 笑うと下まぶたが上がる
+        t_closed = closed_line * (1 - sm) + smile_line * sm
         b_closed = t_closed + 0.3
         t = t_open * op + t_closed * (1 - op)
         b = b_open * op + b_closed * (1 - op)
@@ -821,33 +891,47 @@ def eye_parts(k, order):
     add_part(f"白目{k}", "頭", order + 1, cell=P(4), masks=[mask["name"]])
     # 瞳: 視線で動く
     ir = add_part(f"瞳{k}", "頭", order + 2, cell=P(4), masks=[mask["name"]])
-    ew = cols[-1] - cols[0]
+    ew = xb - xa
     ir["keys"] = [{"param": "ParamEyeBallX", "values": [-1, 0, 1]}, {"param": "ParamEyeBallY", "values": [-1, 0, 1]},
                   {"param": "ParamEyeBallForm", "values": [-1, 0, 1]}]
     ir["forms"] = []
     icx, icy = P(CFG["目"][k]["瞳の中心"])
     for c in combos(ir["keys"]):
-        dx, dy = c["ParamEyeBallX"] * ew * 0.17, -c["ParamEyeBallY"] * float(hgt.mean()) * 0.18
+        dx, dy = c["ParamEyeBallX"] * ew * 0.17, -c["ParamEyeBallY"] * hc * 0.18
         sc = {-1: 0.8, 0: 1.0, 1: 1.1}[c["ParamEyeBallForm"]]   # 驚いたときは瞳が小さくなる(参照シートの驚き顔に合わせて控えめに)
         f = []
         for (vx, vy) in ir["verts"]:
             f += [round(dx + (vx - icx) * (sc - 1), 2), round(dy + (vy - icy) * (sc - 1), 2)]
         ir["forms"].append(f)
 
-    # まつ毛: 目の上端の動きに合わせて下がる
-    lash = add_part(f"まつ毛{k}", "頭", order + 3, cell=P(2))
+    # 下まぶたの線: 動かさず、目を閉じるにつれて消す(笑い目のときも消す)
+    if LAYERS[f"下まぶた{k}"][..., 3].max() > 0.01:
+        low = add_part(f"下まぶた{k}", "頭", order + 3, cell=P(3))
+        low["opacity"] = {"keys": [{"param": open_id, "values": [0, 0.35, 0.7]}, {"param": smile_id, "values": [0, 1]}],
+                          "values": [0, 0, 1, 0, 0, 0.3]}
+
+    # 上まつ毛: 各列で、まつ毛の下の縁を「まぶたの線」に合わせて動かし、閉じるほど薄くする
+    lash = add_part(f"まつ毛{k}", "頭", order + 4, cell=P(1.5))
+    lm = e["lash"]
+    lcols = np.where(lm.any(axis=0))[0]
+    lb = np.array([np.where(lm[:, x])[0].max() for x in lcols], float)   # まつ毛の下の縁
+    # 目尻の縁の線のように下へ伸びる部分で下の縁が急に下がらないよう、前後9列の中央値にする
+    lb = ndimage.median_filter(lb, size=9, mode="nearest")
     lash["keys"] = keys
     lash["forms"] = []
-    lx0, ly0, lx1, ly1 = lash["bbox"]
     for c in combos(keys):
         t, b = shape(c[open_id], c[smile_id], c["ParamEyeForm"])
         d = []
         for (vx, vy) in lash["verts"]:
-            dt = float(np.interp(vx, xs, t - top))
-            # 閉じるほど上下に薄くする(まつ毛の下端を基準に縮める)
-            squash = 1 - 0.62 * (1 - c[open_id])
-            vy2 = ly1 + (vy - ly1) * squash
-            d += [0.0, dt + (vy2 - vy)]
+            u = float(np.clip(vx, xs[0], xs[-1]))
+            tv = float(np.interp(u, xs, t))
+            if c[open_id] >= 1:
+                # 開いた目: まぶたの動き(怒り目など)の分だけ動かす。形はそのまま
+                d += [0.0, tv - float(np.interp(u, xs, top))]
+            else:
+                # 閉じた目: まつ毛の下の縁を、なめらかな閉じ線にぴったり合わせ、厚みを55%にする
+                edge = float(np.interp(u, lcols, lb))   # 目の幅の外は端の列の値を使い、跳ねの形を保つ
+                d += [0.0, (tv - edge) + (vy - edge) * (0.55 - 1)]
         lash["forms"].append(np.round(d, 2).tolist())
 
 eye_parts("R", 40)
