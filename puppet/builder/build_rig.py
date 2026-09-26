@@ -181,6 +181,40 @@ HAIR = HAIR | remove_small(_dark_strand, int(3 * S * S))
 _near_hair = ndimage.binary_dilation(HAIR, iterations=int(3 * S))
 HAIR = HAIR | (_near_hair & (VAL < 110) & (ALPHA > 0.05) & ~_feature)
 
+# 髪のつや: 頭の輪郭のあたりの白っぽい光は色では髪と判定できず、体に振り分けられてしまう。
+# 設定の高さより上で、髪のすぐ近くにある肌色でない画素は髪とする
+if "髪のつや" in CFG:
+    _gloss_y = P(CFG["髪のつや"]["下端"])
+    _skin_px = ((RGB[..., 0] - RGB[..., 2]) * 255 > 12) & (SAT > 12)
+    _gloss = (YY < _gloss_y) & (ALPHA > 0.05) & ~HAIR & ~_skin_px & ndimage.binary_dilation(HAIR, iterations=int(4 * S)) & ~_feature
+    HAIR = HAIR | _gloss
+
+# 髪の外側の輪郭(背景との境の半透明な画素)は、色が背景に引っぱられて髪と判定できないことがある。
+# 髪のすぐ外にあり、体・顔の内側から離れている縁の画素は髪とする(首を振ったとき、体の側に輪郭線が残らないように)
+if CFG.get("髪の縁"):
+    _edge = (ALPHA > 0.02) & ~HAIR & ndimage.binary_dilation(ALPHA < 0.5, iterations=int(3 * S))
+    _inner_other = (ALPHA > 0.95) & ~HAIR
+    _inner_other = ndimage.binary_opening(_inner_other, iterations=int(2 * S))     # 細い線は内側とみなさない
+    _far = ~ndimage.binary_dilation(_inner_other, iterations=int(3 * S))
+    HAIR = HAIR | (_edge & _far & ndimage.binary_dilation(HAIR, iterations=int(4 * S)))
+    # 髪の中の細い光の筋(色が薄く、髪とも肌とも判定がずれる)は、まわりのほとんどが髪なら髪とする
+    _cand = (ALPHA > 0.05) & ~HAIR & ~_feature
+    _thin = _cand & ~ndimage.binary_opening(_cand, iterations=max(1, int(2 * S)))
+    _lab, _n = ndimage.label(_thin)
+    if _n:
+        _frac = ndimage.uniform_filter(HAIR.astype(np.float32), size=int(5 * S) | 1)
+        _mean = ndimage.mean(_frac, _lab, np.arange(1, _n + 1))
+        HAIR = HAIR | np.isin(_lab, np.where(_mean > 0.55)[0] + 1)
+
+# まつ毛が赤茶色で髪の色に近い絵では、目のまわりの暗い画素が髪(前髪)に入ってしまう。
+# 設定した目では、目の範囲の暗い画素を髪から外す(まつ毛として目の部品に入る)
+for _e in CFG["目"].values():
+    if _e.get("まつ毛が赤茶色"):
+        _x0, _y0, _x1, _y1 = [int(round(v)) for v in P(_e["範囲"])]
+        _lash_box = np.zeros((H, W), bool)
+        _lash_box[_y0 - int(3 * S):_y1 + int(2 * S), _x0 - int(3 * S):_x1 + int(3 * S)] = True
+        HAIR &= ~(_lash_box & (VAL < 110))
+
 # 前髪 = 顔の上にかかる髪
 bg = CFG["前髪の範囲"]
 BANGS = HAIR & ellipse_mask(P(bg["中心"]), P(bg["半径"])) & (YY < P(bg["下端"])) & HEAD_POLY
@@ -274,8 +308,13 @@ def extract_eye_v2(key):
     e = CFG["目"][key]
     box = [int(round(v)) for v in P(e["範囲"])]
     bright_hair = hair_color & (VAL > 150)
+    excl = BANGS | bright_hair
+    if e.get("まつ毛が赤茶色"):
+        excl = (BANGS & (VAL >= 110)) | bright_hair
     r = eyelib.extract(RGB, ALPHA, np.dstack([hsv[..., 0], SAT, VAL]), box, P(e["瞳の中心"]), P(e["瞳の半径"]), S,
-                       BANGS | bright_hair)
+                       excl, corner_reach=e.get("目尻の伸び", 1.0),
+                       join_parts=e.get("白目が髪で分かれている", False),
+                       hint=polygon_mask(P(e["開いている部分"])) if "開いている部分" in e else None)
     r["lash"] = r["upper"]
     r["iris"] = r["opening"] & r["iris_ell"]
     return r
@@ -446,6 +485,10 @@ for k, e in EYES.items():
     pale_px = (SAT < 30) & (VAL > 150)
     # 瞳の範囲 = 暗い縁取りの輪の内側(白目の画素を含めない。視線を動かしたとき白目がついて来ないように)
     iris_reg = ndimage.binary_fill_holes(e["opening"] & big_ell & ~pale_px)
+    if CFG.get("瞳の明るい部分も瞳に含める"):
+        # 瞳の中の明るい光が縁までつながっている絵では、穴埋めで拾えず白目が透けて見える。
+        # 瞳の楕円(少し小さめ)の中は明るくても瞳とする
+        iris_reg |= e["opening"] & ellipse_mask((icx_, icy_), (irx_ * 0.9, iry_ * 0.9))
     lab_, n_ = ndimage.label(iris_reg)
     if n_ > 1:
         iris_reg = lab_ == lab_[int(icy_), int(icx_)] if lab_[int(icy_), int(icx_)] else lab_ == (np.argmax(ndimage.sum(iris_reg, lab_, range(1, n_ + 1))) + 1)

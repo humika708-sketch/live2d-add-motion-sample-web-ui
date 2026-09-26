@@ -13,7 +13,10 @@
   #stage { flex: 1; position: relative; min-width: 0;
            background: radial-gradient(circle at 50% 30%, #3b3346 0%, #1d1f27 70%); }
   #stage.checker { background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 24px 24px; }
-  #cv { width: 100%; height: 100%; display: block; touch-action: none; }
+  #stage canvas { touch-action: none; }
+  #status { z-index: 5; }
+  .btns3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  button.on { border-color: var(--accent); background: #4a3a44; }
   #status { position: absolute; left: 12px; bottom: 12px; background: #000a; padding: 4px 10px; border-radius: 6px; font-size: 12px; }
   #panel { width: 340px; background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 14px; }
   h1 { font-size: 16px; margin: 0 0 4px; }
@@ -31,10 +34,16 @@
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="cv"></canvas><div id="status">読み込み中…</div></div>
+<div id="stage"><div id="status">読み込み中…</div></div>
 <div id="panel">
   <h1>パペット確認画面</h1>
   <div class="note">マウスの方向を向きます。下のスライダーで各部を直接動かせます。</div>
+
+  <div id="viewBox" style="display:none">
+    <h2>向き</h2>
+    <div class="btns3" id="views"></div>
+    <div class="note" style="margin-top:4px">向きごとに別の絵から組み立てたパペットに、振り向くように切り替えます。</div>
+  </div>
 
   <h2>モーション</h2>
   <div class="btns" id="motions"></div>
@@ -68,32 +77,65 @@
 </div>
 
 <script type="module">
-import { PuppetView, Motion } from "../runtime/puppet.js";
+import { Motion } from "../runtime/puppet.js";
+import { PuppetViews } from "../runtime/views.js";
 
 const q = new URLSearchParams(location.search);
 const MODEL = q.get("model") || "../models/kurisu/puppet.json";
 const MOTION_DIR = q.get("motions") || "../models/kurisu/motions/";
 const status = document.getElementById("status");
-const canvas = document.getElementById("cv");
+const stage = document.getElementById("stage");
 
-const FOCUS = { all: null };
-let view, puppet;
-
+// 向き違いのパペット。?model= で別のモデルを指定したときは、その1体だけにする
+const VIEW_DEFS = [
+  { name: "斜め左", url: "../models/kurisu_左/puppet.json", yaw: -1 },
+  { name: "正面", url: MODEL, yaw: 0 },
+  { name: "斜め右", url: "../models/kurisu_右/puppet.json", yaw: 1 },
+];
+const available = [];
+for (const d of VIEW_DEFS) {
+  if (d.url === MODEL) { available.push(d); continue; }
+  if (q.get("model") || q.get("views") === "0") continue;
+  try { if ((await fetch(d.url, { method: "HEAD" })).ok) available.push(d); } catch { /* 無ければ使わない */ }
+}
+const views = new PuppetViews(stage, available, { follow: "window" });
+let puppet;
 try {
-  view = new PuppetView(canvas, { follow: "window" });
-  puppet = await view.load(MODEL);
+  const first = available.find((d) => d.name === q.get("view")) || available.find((d) => d.url === MODEL);
+  if (q.get("focus")) views.setFocus(q.get("focus"));
+  await views.load(first.name);
 } catch (e) {
   status.textContent = "エラー: " + e.message;
   throw e;
 }
-window.puppet = puppet; window.view = view;   // 確認・操作用
-const head = puppet.json.anchors.head;
-const hw = head[2] - head[0], hh = head[3] - head[1];
-FOCUS.bust = [head[0] - hw * 0.45, head[1], hw * 1.9, hh * 1.7];
-FOCUS.face = [head[0] + hw * 0.1, head[1] + hh * 0.2, hw * 0.8, hh * 0.75];
-function setFocus(name) { view.opts.focus = FOCUS[name]; puppet.fit(0.04, FOCUS[name]); }
+// 操作はすべての向きに届ける(読み込み済みの向きに同じ操作をし、値の読み出しは今の向きから)
+puppet = new Proxy({}, {
+  get(_, k) {
+    const cur = views.puppet;
+    const v = cur[k];
+    if (typeof v !== "function") return v;
+    if (["getParam", "fit", "render", "update"].includes(k)) return v.bind(cur);
+    return (...args) => { let r; for (const p of views.loaded()) { const x = p[k](...args); if (p === cur) r = x; } return r; };
+  },
+});
+window.puppet = puppet; window.views = views;   // 確認・操作用
+Object.defineProperty(window, "view", { get: () => views.view });
+function setFocus(name) { views.setFocus(name); }
 document.querySelectorAll("[data-focus]").forEach((b) => b.onclick = () => setFocus(b.dataset.focus));
-if (q.get("focus")) setFocus(q.get("focus"));
+
+// 向きの切り替えボタン
+if (available.length > 1) {
+  document.getElementById("viewBox").style.display = "";
+  const vbox = document.getElementById("views");
+  for (const d of available) {
+    const b = document.createElement("button");
+    b.textContent = d.name;
+    b.onclick = async () => { status.textContent = `向きを切り替え中: ${d.name}`; await views.setView(d.name); status.textContent = `向き: ${d.name}`; };
+    vbox.appendChild(b);
+  }
+  views.onChange = (name) => { for (const b of vbox.children) b.classList.toggle("on", b.textContent === name); };
+  views.onChange(views.currentName);
+}
 
 // パラメータのスライダー
 const sliders = new Map();
@@ -112,7 +154,7 @@ document.getElementById("resetParams").onclick = () => {
 };
 
 // 自動の動き
-const bind = (id, key) => { const el = document.getElementById(id); el.onchange = () => { puppet.auto[key] = el.checked; if (key === "lookAt" && !el.checked) puppet.lookAt(0, 0); }; };
+const bind = (id, key) => { const el = document.getElementById(id); el.onchange = () => { views.auto[key] = el.checked; if (key === "lookAt" && !el.checked) puppet.lookAt(0, 0); }; };
 bind("autoLook", "lookAt"); bind("autoBlink", "blink"); bind("autoBreath", "breath"); bind("autoPhysics", "physics");
 // 小物の切り替え(パラメータのスライダーとも連動させる)
 const toggle = (id, param) => {
@@ -137,7 +179,7 @@ const mbox = document.getElementById("motions"), sel = document.getElementById("
 for (const m of motionList) {
   const b = document.createElement("button");
   b.textContent = m.name;
-  b.onclick = async () => { status.textContent = `再生中: ${m.name}`; await puppet.playMotion(MOTION_DIR + m.file); status.textContent = "待機中"; };
+  b.onclick = async () => { status.textContent = `再生中: ${m.name}`; await views.puppet.playMotion(MOTION_DIR + m.file); status.textContent = "待機中"; };
   mbox.appendChild(b);
   const o = document.createElement("option"); o.value = m.file; o.textContent = m.name; sel.appendChild(o);
 }
@@ -156,10 +198,14 @@ for (const ex of expressions) {
 }
 if (!expressions.length) ebox.innerHTML = '<div class="note">表情がありません</div>';
 window.expressions = expressions;
-let idleOn = false;
+let idleOn = false, idleList = [];
+// 後から読み込んだ向きにも待機モーションを設定する
+const onChange0 = views.onChange;
+views.onChange = (name, p) => { if (onChange0) onChange0(name, p); views.view.setIdleMotions(idleList); };
 document.getElementById("idleToggle").onclick = (e) => {
   idleOn = !idleOn;
-  view.setIdleMotions(idleOn ? motionList.filter((m) => m.idle).map((m) => MOTION_DIR + m.file) : []);
+  idleList = idleOn ? motionList.filter((m) => m.idle).map((m) => MOTION_DIR + m.file) : [];
+  for (const e of views.entries.values()) e.view.setIdleMotions(idleList);
   e.target.textContent = `待機モーション: ${idleOn ? "入" : "切"}`;
 };
 
@@ -167,19 +213,20 @@ document.getElementById("idleToggle").onclick = (e) => {
 document.getElementById("mic").onclick = async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    puppet.connectAudio(stream);
+    views.puppet.connectAudio(stream);
+    views.all((p) => { p.lipSync = views.puppet.lipSync; });
     status.textContent = "マイク入力で口パク中";
   } catch (e) { status.textContent = "マイクを使えません: " + e.message; }
 };
 
 // 書き出し
 function download(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; a.click(); }
-document.getElementById("exportPng").onclick = () => download(canvas.toDataURL("image/png"), "puppet.png");
+document.getElementById("exportPng").onclick = () => download(views.entries.get(views.currentName).canvas.toDataURL("image/png"), "puppet.png");
 document.getElementById("exportSheet").onclick = async () => {
   const file = sel.value;
   if (!file) return;
   status.textContent = "書き出し中…";
-  const res = await exportSpriteSheet(MOTION_DIR + file, { fps: 24, width: 512, height: 512, focus: view.opts.focus });
+  const res = await exportSpriteSheet(MOTION_DIR + file, { fps: 24, width: 512, height: 512, focus: views.view.opts.focus });
   download(res.sheet, file.replace(".motion3.json", "") + "_連番.png");
   download(URL.createObjectURL(new Blob([JSON.stringify(res.meta, null, 2)], { type: "application/json" })), file.replace(".motion3.json", "") + "_連番.json");
   status.textContent = `書き出し完了(${res.meta.frames}コマ)`;
@@ -190,7 +237,7 @@ async function exportSpriteSheet(url, { fps, width, height, focus }) {
   const off = document.createElement("canvas");
   off.width = width; off.height = height;
   const { Puppet } = await import("../runtime/puppet.js");
-  const p = await Puppet.load(off, MODEL);
+  const p = await Puppet.load(off, views.entries.get(views.currentName).def.url);
   p.auto.lookAt = false; p.auto.blink = false;
   p.fit(0.04, focus);
   const motion = await Motion.load(url);
@@ -213,10 +260,10 @@ async function exportSpriteSheet(url, { fps, width, height, focus }) {
 window.exportSpriteSheet = exportSpriteSheet;
 
 // 確認用: ?set=ParamAngleX:30,ParamEyeLOpen:0 で値を固定、?auto=0 で自動の動きを止める、?play=ファイル名 で再生
-if (q.get("auto") === "0") { for (const k of Object.keys(puppet.auto)) if (k !== "physics" && k !== "bodyFollow") puppet.auto[k] = false; }
+if (q.get("auto") === "0") { for (const k of Object.keys(views.auto)) if (k !== "physics" && k !== "bodyFollow") views.auto[k] = false; }
 if (q.get("set")) for (const kv of q.get("set").split(",")) { const [k, v] = kv.split(":"); puppet.setParam(k, +v); }
 if (q.get("expr")) { const ex = expressions.find((x) => x.name === q.get("expr")); if (ex) puppet.setExpression(ex.params, 0.01); }
-if (q.get("play")) puppet.playMotion(MOTION_DIR + q.get("play"));
+if (q.get("play")) views.puppet.playMotion(MOTION_DIR + q.get("play"));
 status.textContent = "準備完了";
 window.READY = true;
 </script>

@@ -13,8 +13,11 @@ import numpy as np
 from scipy import ndimage
 
 
-def extract(rgb, alpha, hsv, box, iris_center, iris_radius, S, exclude):
-    """rgb: 0〜1、hsv: HSV_FULL(0〜255)、box: (x0,y0,x1,y1)、exclude: 目の部品にしない画素(前髪など)"""
+def extract(rgb, alpha, hsv, box, iris_center, iris_radius, S, exclude, corner_reach=1.0, join_parts=False, hint=None):
+    """rgb: 0〜1、hsv: HSV_FULL(0〜255)、box: (x0,y0,x1,y1)、exclude: 目の部品にしない画素(前髪など)
+    corner_reach: 目頭・目尻の外へまつ毛をたどる距離の倍率(斜め向きの手前の目など、目尻が長い絵で大きくする)
+    join_parts: 細い髪の毛が白目を横切って、白目が分かれている絵のとき True(分かれた白目もつなぐ)
+    hint: 開いている部分として必ず含める範囲(影で色が肌に近い白目など、色で見分けられないとき)"""
     H, W = alpha.shape
     V, Sat = hsv[..., 2].astype(np.float32), hsv[..., 1].astype(np.float32)
     x0, y0, x1, y1 = box
@@ -31,6 +34,8 @@ def extract(rgb, alpha, hsv, box, iris_center, iris_radius, S, exclude):
     pale = (Sat < 30) & (V > 150)
     opening = core_box & (bluish | pale) & ~exclude
     opening = ndimage.binary_opening(opening, iterations=1)
+    if hint is not None:
+        opening |= hint & ~exclude
     cx, cy = iris_center
     yy, xx = np.mgrid[0:H, 0:W]
     iris_ell = ((xx - cx) / (iris_radius[0] * 1.15)) ** 2 + ((yy - cy) / (iris_radius[1] * 1.15)) ** 2 <= 1
@@ -40,7 +45,16 @@ def extract(rgb, alpha, hsv, box, iris_center, iris_radius, S, exclude):
     lab, n = ndimage.label(opening)
     if n > 1:
         sizes = ndimage.sum(opening, lab, range(1, n + 1))
-        opening = lab == (np.argmax(sizes) + 1)
+        if join_parts:
+            # ある程度の大きさの塊はすべて残し、髪の毛1本ぶんのすき間を埋めてつなぐ
+            opening = np.isin(lab, [i + 1 for i, s_ in enumerate(sizes) if s_ >= 0.08 * sizes.max()])
+            opening = ndimage.binary_fill_holes(ndimage.binary_closing(opening, iterations=max(1, int(2 * S)))) & core_box
+            lab, n = ndimage.label(opening)
+            if n > 1:
+                sizes = ndimage.sum(opening, lab, range(1, n + 1))
+                opening = lab == (np.argmax(sizes) + 1)
+        else:
+            opening = lab == (np.argmax(sizes) + 1)
 
     cols = np.where(opening.any(axis=0))[0]
     top = np.full(W, np.nan)
@@ -56,7 +70,7 @@ def extract(rgb, alpha, hsv, box, iris_center, iris_radius, S, exclude):
     top_full = np.interp(np.arange(W), cols, top[cols])
     band = (yy >= top_full[None, :] - 8 * S) & (yy <= top_full[None, :] + 3 * S) & (xx >= xa) & (xx <= xb)
     for (qx, qy) in ((xa, ya), (xb, yb)):
-        band |= ((xx - qx) ** 2 + (yy - qy) ** 2 <= (11 * S) ** 2) & (yy >= qy - 8 * S)
+        band |= ((xx - qx) ** 2 + (yy - qy) ** 2 <= (11 * S * corner_reach) ** 2) & (yy >= qy - 8 * S)
     band &= inbox & ~exclude
     black = band & (V < 70)
     dark = band & (V < 175)
@@ -89,7 +103,7 @@ def extract(rgb, alpha, hsv, box, iris_center, iris_radius, S, exclude):
     # 目頭・目尻の外側: 目のすぐそば(5S以内)か、目の端より上(外へ跳ねるまつ毛)だけ
     dist_open = ndimage.distance_transform_edt(~opening)
     outside_cols = (xx < xa) | (xx > xb)
-    corner_ok = outside_cols & ink & (dist_open <= 9 * S) & (yy <= np.where(xx < xa, ya, yb) + 2 * S)
+    corner_ok = outside_cols & ink & (dist_open <= 9 * S * corner_reach) & (yy <= np.where(xx < xa, ya, yb) + 2 * S)
     upper = keep | corner_ok
     # 残した画素につながっていない小さな破片は捨てる
     lab, n = ndimage.label(ndimage.binary_dilation(upper))

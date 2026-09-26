@@ -7,40 +7,60 @@
 <style>
   /* 背景は透明。配信ソフトのブラウザ表示や、他のページへの埋め込みにそのまま使える */
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-  canvas { width: 100vw; height: 100vh; display: block; }
+  #stage { width: 100vw; height: 100vh; }
 </style>
 </head>
 <body>
-<canvas id="cv"></canvas>
+<div id="stage"></div>
 <script type="module">
 // 指定できる項目(アドレスの ? の後ろ):
 //   focus=bust     バストアップで表示(省略時は全身)
 //   mic=1          マイクの音量で口パク(初回に許可が必要)
 //   idle=0         待機モーションを流さない
-//   model=...      別のモデル(puppet.json)を使う
-import { PuppetView } from "../runtime/puppet.js";
+//   view=斜め右    最初の向き(正面 / 斜め左 / 斜め右。向き違いのモデルがあるときだけ)
+//   model=...      別のモデル(puppet.json)を1体だけ使う
+import { PuppetViews } from "../runtime/views.js";
 
 const q = new URLSearchParams(location.search);
-const base = q.get("model") ? q.get("model").replace(/[^/]*$/, "") : "../models/kurisu/";
-const view = new PuppetView(document.getElementById("cv"), { follow: "window" });
-const puppet = await view.load(q.get("model") || base + "puppet.json");
-if (q.get("focus") === "bust") {
-  const h = puppet.json.anchors.head, hw = h[2] - h[0], hh = h[3] - h[1];
-  view.opts.focus = [h[0] - hw * 0.45, h[1], hw * 1.9, hh * 1.7];
-  puppet.fit(0.04, view.opts.focus);
+const MODEL = q.get("model") || "../models/kurisu/puppet.json";
+const base = MODEL.replace(/[^/]*$/, "");
+// 向き違いのモデル(あるものだけ使う)。モーションと表情は正面のモデルのものを共通で使う
+const defs = [
+  { name: "斜め左", url: "../models/kurisu_左/puppet.json", yaw: -1 },
+  { name: "正面", url: MODEL, yaw: 0 },
+  { name: "斜め右", url: "../models/kurisu_右/puppet.json", yaw: 1 },
+];
+const available = [];
+for (const d of defs) {
+  if (d.url === MODEL) { available.push(d); continue; }
+  if (q.get("model")) continue;
+  try { if ((await fetch(d.url, { method: "HEAD" })).ok) available.push(d); } catch { /* 無ければ使わない */ }
 }
+const views = new PuppetViews(document.getElementById("stage"), available, { follow: "window" });
+if (q.get("focus") === "bust") views.setFocus("bust");
+const first = available.find((d) => d.name === q.get("view")) || available.find((d) => d.url === MODEL);
+await views.load(first.name);
+
+let idle = [];
 if (q.get("idle") !== "0") {
   try {
     const list = await (await fetch(base + "motions/index.json")).json();
-    view.setIdleMotions(list.filter((m) => m.idle).map((m) => base + "motions/" + m.file));
+    idle = list.filter((m) => m.idle).map((m) => base + "motions/" + m.file);
+    views.view.setIdleMotions(idle);
   } catch { /* モーションが無くても動く */ }
 }
+views.onChange = () => views.view.setIdleMotions(idle);
 if (q.get("mic") === "1") {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  puppet.connectAudio(stream);
+  views.puppet.connectAudio(stream);
+  views.all((p) => { p.lipSync = views.puppet.lipSync; });
 }
-// 他のスクリプトから操作できるように公開する(例: puppet.playMotion("../models/kurisu/motions/smile.motion3.json"))
-window.puppet = puppet;
+// 他のスクリプトから操作できるように公開する。例:
+//   views.setView("斜め右")                          振り向いて向きを変える
+//   views.puppet.playMotion("../models/kurisu/motions/smile.motion3.json")
+//   views.all((p) => p.setExpression({ ParamMouthForm: 1 }))   全部の向きに同じ表情
+window.views = views;
+Object.defineProperty(window, "puppet", { get: () => views.puppet });
 </script>
 </body>
 </html>

@@ -22,7 +22,9 @@ from psd_tools import PSDImage
 from psd_tools.api.layers import PixelLayer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG = json.load(open(os.path.join(HERE, "rig_config.json"), encoding="utf-8"))
+# 使う設定ファイル。斜め向きなど別の設定のモデルを書き出すときは、環境変数 RIG_CONFIG で指定する
+#   例: RIG_CONFIG=rig_config_斜め右向き.json python3 export_psd.py 出力.psd
+CFG = json.load(open(os.path.join(HERE, os.environ.get("RIG_CONFIG", "rig_config.json")), encoding="utf-8"))
 LAYER_DIR = os.path.join(HERE, CFG["output"], "layers")
 
 

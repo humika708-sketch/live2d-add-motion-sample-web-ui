@@ -419,6 +419,7 @@ export class Puppet {
     this.lookTarget = { x: 0, y: 0 };
     this.look = { x: 0, y: 0, vx: 0, vy: 0 };
     this.lipSync = null;              // 0〜1 を返す関数、または数値
+    this.offsets = new Map();         // 上乗せする値(向きの切り替えで首を回すときなどに使う)
     this._blink = { next: 1.5, phase: -1 };
     this.view = { x: 0, y: 0, scale: 1 };  // 描画位置(キャンバスのピクセル単位)
     this.fit();
@@ -450,6 +451,8 @@ export class Puppet {
     if (p) this.userParams.set(id, clamp(value, p.min, p.max));
   }
   getParam(id) { return this.params.get(id) ?? this.userParams.get(id); }
+  // 利用者の値・表情・モーションの上に足す値(0 で解除)。視線追従や呼吸とも重なる
+  setOffset(id, value) { if (value) this.offsets.set(id, value); else this.offsets.delete(id); }
   // 視線・顔の向きの目標(-1〜1。xは右が正、yは上が正)
   lookAt(x, y) { this.lookTarget.x = clamp(x, -1, 1); this.lookTarget.y = clamp(y, -1, 1); }
   // 口パク: 数値(0〜1)か、毎フレーム呼ばれる関数を渡す。null で解除。
@@ -523,6 +526,7 @@ export class Puppet {
 
     // モーション
     const touched = this.motions.update(this.time, P);
+    for (const [k, v] of this.offsets) if (this.paramInfo.has(k)) P.set(k, (P.get(k) ?? 0) + v);
 
     // 視線追従(なめらかに目標へ寄せる)
     const L = this.look;
