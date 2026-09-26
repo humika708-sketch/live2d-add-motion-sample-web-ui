@@ -213,7 +213,7 @@ async function exportSpriteSheet(url, { fps, width, height, focus }) {
 window.exportSpriteSheet = exportSpriteSheet;
 
 // 確認用: ?set=ParamAngleX:30,ParamEyeLOpen:0 で値を固定、?auto=0 で自動の動きを止める、?play=ファイル名 で再生
-if (q.get("auto") === "0") { for (const k of Object.keys(puppet.auto)) if (k !== "physics") puppet.auto[k] = false; }
+if (q.get("auto") === "0") { for (const k of Object.keys(puppet.auto)) if (k !== "physics" && k !== "bodyFollow") puppet.auto[k] = false; }
 if (q.get("set")) for (const kv of q.get("set").split(",")) { const [k, v] = kv.split(":"); puppet.setParam(k, +v); }
 if (q.get("expr")) { const ex = expressions.find((x) => x.name === q.get("expr")); if (ex) puppet.setExpression(ex.params, 0.01); }
 if (q.get("play")) puppet.playMotion(MOTION_DIR + q.get("play"));

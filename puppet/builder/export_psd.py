@@ -72,6 +72,8 @@ def main():
         ("mouth_open", load("口_中開き") if has("口_中開き") else load("口_あ") if has("口_あ") else load("開き口")),
         ("eyewear", load("眼鏡_黒")) if with_glasses and has("眼鏡_黒") else None,
         ("front hair", load("PSD_前髪")),
+        # 眉は元の絵でも前髪の上に描かれているので、前髪より上に置く
+        ("eyebrow", merge("眉R", "眉L")) if has("眉R") and has("眉L") else None,
     ]
     stack = [x for x in stack if x is not None]
     h, w = stack[0][1].shape[:2]

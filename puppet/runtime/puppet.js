@@ -415,7 +415,7 @@ export class Puppet {
     this.motions = new MotionPlayer();
     this.time = 0;
     // 自動動作の設定(アプリ側で切り替え可能)
-    this.auto = { blink: true, breath: true, lookAt: true, physics: true };
+    this.auto = { blink: true, breath: true, lookAt: true, physics: true, bodyFollow: true };
     this.lookTarget = { x: 0, y: 0 };
     this.look = { x: 0, y: 0, vx: 0, vy: 0 };
     this.lipSync = null;              // 0〜1 を返す関数、または数値
@@ -533,11 +533,19 @@ export class Puppet {
     }
     if (this.auto.lookAt) {
       const add = (id, v) => { if (this.paramInfo.has(id)) P.set(id, (P.get(id) ?? 0) + v); };
-      add("ParamAngleX", L.x * 20); add("ParamAngleY", L.y * 18);
+      add("ParamAngleX", L.x * 24); add("ParamAngleY", L.y * 18);
       add("ParamAngleZ", -L.x * L.y * 8);
-      add("ParamBodyAngleX", L.x * 10);
+      add("ParamBodyAngleX", L.x * 4);
       if (!touched.has("ParamEyeBallX")) add("ParamEyeBallX", L.x);
       if (!touched.has("ParamEyeBallY")) add("ParamEyeBallY", L.y);
+    }
+
+    // 体の追従: 頭が動くと上半身も少しついていく(頭だけが動いて首が伸びて見えないように)
+    if (this.auto.bodyFollow !== false) {
+      const add = (id, v) => { if (this.paramInfo.has(id)) P.set(id, (P.get(id) ?? 0) + v); };
+      add("ParamBodyAngleX", (P.get("ParamAngleX") ?? 0) * 0.22);
+      add("ParamBodyAngleZ", (P.get("ParamAngleZ") ?? 0) * 0.18);
+      add("ParamBreath", 0);
     }
 
     // 呼吸

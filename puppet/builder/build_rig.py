@@ -51,6 +51,14 @@ os.makedirs(DEBUG, exist_ok=True)
 
 ALPHA = np.where(IMG[..., 3] > 0.94, 1.0, IMG[..., 3])   # 背景除去でわずかに透けている部分を不透明に戻す
 RGB = IMG[..., :3]
+
+# 元の絵の眉(前髪の上に透けて描かれた細い線)を取り出し、絵からは消しておく(眉は別の部品として動かす)
+import brow_parts
+BROW_ALPHAS, BROW_INFO = [], []
+if "眉" in CFG:
+    _ORIG_RGB = RGB.copy()
+    _boxes = [tuple(int(round(v * (IMG.shape[1] / CFG["baseWidth"]))) for v in b) for b in CFG["眉"]["範囲"]]
+    RGB, BROW_ALPHAS, BROW_INFO = brow_parts.extract(RGB, RGB.max(axis=2) * 255, IMG.shape[1] / CFG["baseWidth"], _boxes)
 OPAQUE = ALPHA > 0.5
 YY, XX = np.mgrid[0:H, 0:W].astype(np.float32)
 
@@ -629,11 +637,16 @@ if MAT:
     if tear is not None:
         for i, pos in enumerate(MAT["涙"]["位置"]):
             place_material(f"涙{'RL'[i]}", tear, pos, MAT["涙"]["幅"])
-    if "眉" in MAT:
-        for i, (cr, c) in enumerate(zip(MAT["眉"]["切り出し"], MAT["眉"]["中心"])):
-            im = load_material("眉", crop=cr)
-            if im is not None:
-                place_material(f"眉{'RL'[i]}", im, c, MAT["眉"]["幅"], alpha_scale=MAT["眉"].get("不透明度", 1.0))
+
+
+# 元の眉: 元の絵と、眉を消した絵との差で取り出す(肌や前髪の上に重ねると元どおりに見える)
+for i, (ba, info) in enumerate(zip(BROW_ALPHAS, BROW_INFO)):
+    if info is None:
+        continue
+    _reg = ndimage.binary_dilation(ba > 0.02, iterations=max(1, int(S)))
+    _col, _a = eyelib.diff_layer(_ORIG_RGB, RGB, _reg, strength=0.25, darker_only=True)
+    layer(f"眉{'RL'[i]}", _col, _a * ALPHA)
+    MAT_INFO[f"眉{'RL'[i]}"] = (info[0], info[1], info[2], P(6))
 
 # 部品を元の位置のまま全体サイズでも保存する(PSD書き出し export_psd.py で使う)
 os.makedirs(os.path.join(OUT, "layers"), exist_ok=True)
@@ -746,10 +759,20 @@ def combos(keys):
 # --- 頭の立体的な回転(球に貼った絵を回すと考える)
 HCX, HCY = P(head["中心"])
 HRX, HRY = P(head["半径"])
-YAW_MAX, PITCH_MAX, ROLL_MAX = 13.0, 9.0, 9.0   # 参照シートの角度参考と見比べて決めた。大きくすると首や髪の根元の塗り足しが見えやすくなる
+YAW_MAX, PITCH_MAX, ROLL_MAX = 10.0, 7.0, 8.0   # 大きくすると顔の形がゆがみ、首や髪の根元の塗り足しが見えやすくなる。足りない分は体の動きで補う
+CHIN_Y = max(p[1] for p in P(head["あごの線"]))      # あご先の高さ
+CHIN_PIN = 0.7                                       # あご先の動きを打ち消す割合(1で完全に固定)
 PX, PY = P(head["首の回転軸"])
 
 def head_warp_disp(ax, ay, xs, ys, depth_bias=0.0):
+    """頭の向き(左右・上下)による変形。あご先の動きの大部分を打ち消し、首のところを支点に回るようにする
+    (頭全体がずれて首が伸びたり、あごの下が見えたりしないように)"""
+    dx, dy = _head_warp_raw(ax, ay, xs, ys, depth_bias)
+    cdx, cdy = _head_warp_raw(ax, ay, np.array([HCX]), np.array([CHIN_Y]), depth_bias)
+    return dx - CHIN_PIN * cdx[0], dy - CHIN_PIN * cdy[0]
+
+
+def _head_warp_raw(ax, ay, xs, ys, depth_bias=0.0):
     th = math.radians(ax / 30 * YAW_MAX)
     ph = math.radians(ay / 30 * PITCH_MAX)
     u = (xs - HCX) / HRX
@@ -1151,7 +1174,7 @@ for key, order in (("眼鏡_黒", 64), ("眼鏡_赤", 65)):
 
 add_part("前髪", "前髪の揺れ", 70, cell=P(6))
 
-# 眉: 前髪の上に半透明で描く(透け眉)。上下と傾きで表情を付ける
+# 眉: 元の絵の眉(前髪の上に透けて描かれている)。上下と傾きで表情を付ける
 for i, sd in enumerate("RL"):
     if f"眉{sd}" in LAYERS:
         bp = add_part(f"眉{sd}", "前髪の奥行き", 72 + i, cell=P(3))
@@ -1229,7 +1252,7 @@ PARAMS = [
     ("ParamEyeForm", "目の形(困り目↔怒り目)", -1, 1, 0), ("ParamEyeBallForm", "瞳の大きさ", -1, 1, 0),
     ("ParamMouthOpenY", "口の開き", 0, 1, 0), ("ParamMouthForm", "口の形(笑顔↔への字)", -1, 1, 0),
     ("ParamCheek", "頬の赤み", 0, 1, 0),
-    ("ParamBrowVisible", "眉を表示(透け眉)", 0, 1, 1), ("ParamBrowY", "眉の上下", -1, 1, 0),
+    ("ParamBrowVisible", "眉を表示", 0, 1, 1), ("ParamBrowY", "眉の上下", -1, 1, 0),
     ("ParamBrowAngle", "眉の傾き(困り↔怒り)", -1, 1, 0),
     ("ParamAnger", "怒りマーク", 0, 1, 0), ("ParamSweat", "汗", 0, 1, 0), ("ParamTear", "涙", 0, 1, 0),
     ("ParamGlasses", "眼鏡", 0, 1, 0),
